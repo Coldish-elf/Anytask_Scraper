@@ -8,7 +8,7 @@ from html import unescape
 
 from bs4 import BeautifulSoup, Tag
 
-from anytask_scrapper.models import (
+from anytask_scraper.models import (
     Comment,
     Course,
     FileAttachment,

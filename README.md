@@ -1,162 +1,359 @@
-# anytask-scrapper
+# anytask-scraper
 
-CLI-инструмент на Python для сбора данных с [anytask.org](https://anytask.org):
+`anytask-scraper` - CLI и Python-библиотека для сбора данных с [anytask.org](https://anytask.org).
 
-- задач курса,
-- дедлайнов,
-- статусов и оценок,
-- очереди на проверку,
-- деталей сабмишнов (issue) и файлов из комментариев.
+## Возможности
 
-## Основные возможности
-
-- Авторизация в anytask через сессию и CSRF.
-- Парсинг страниц курсов в двух режимах:
-  - student view (оценки, статус, дедлайн, описание, ссылка на отправку),
-  - teacher view (секции/группы, max score, дедлайн, ссылка на редактирование задачи).
-- Дополнительная загрузка описаний задач для teacher view (`--fetch-descriptions`).
-- Работа с очередью проверки (`queue`):
-  - выгрузка всех записей,
-  - локальные фильтры по задаче/проверяющему/статусу,
-  - deep-режим с загрузкой страниц сабмишнов,
-  - скачивание файлов из комментариев (`--download-files`).
-- Экспорт в `json` и `markdown`.
-- Вывод цветных таблиц в терминал (`rich`).
-- Использование как библиотеки Python (импорт функций и моделей из пакета).
+- Авторизация через логин/пароль и/или сохраненную cookie-сессию.
+- Парсинг страниц курса в student и teacher view.
+- Сбор очереди на проверку с фильтрами.
+- `deep`-режим для загрузки submission.
+- Скачивание файлов и Colab-ноутбуков из комментариев submission.
+- Экспорт в `json`, `markdown` и вывод в `table`.
+- Сохранение CLI-настроек через `settings`.
 
 ## Установка
 
 Требуется Python 3.10+.
 
 ```bash
-git clone <repo-url>
-cd anytask-scrapper
+git clone https://github.com/Coldish-elf/Anytask_Scraper
+cd Anytask_Scraper
 pip install -e .
 ```
 
-После установки:
+Проверка:
 
 ```bash
-anytask-scrapper --help
+anytask-scraper --help
 ```
 
-## Быстрый старт
+## Быстрый старт CLI
 
-### 1) Выгрузить задачи курса
+### Рекомендуемый (через settings и default)
+
+1. Создайте `credentials.json`:
+
+```json
+{
+  "username": "your_login",
+  "password": "your_password"
+}
+```
+
+2. Инициализируйте настройки по умолчанию:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' course -c COURSE_ID
+anytask-scraper settings init
 ```
 
-Результат: `./course_<COURSE_ID>.json`.
-
-### 2) Показать курс таблицей без сохранения
+3. Первый запуск(для сохранения сессии):
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' course -c COURSE_ID -f table
+anytask-scraper course -c course_id
 ```
 
-### 3) Выгрузить очередь курса
+4. Следующие запуски:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' queue -c COURSE_ID
+anytask-scraper queue -c course_id
 ```
 
-Результат: `./queue_<COURSE_ID>.json`.
+`settings init` уже выставляет:
 
-### 4) Очередь + детали сабмишнов + скачивание файлов
+- `credentials_file: ./credentials.json`
+- `session_file: ./.anytask_session.json`
+- `status_mode: errors`
+- `default_output: ./output`
+- `save_session: true`
+- `refresh_session: false`
+
+Если нужны другие пути/значения, измените только нужные поля:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' queue -c COURSE_ID --deep --download-files -o ./output
+anytask-scraper settings set --default-output ./reports
 ```
 
-## CLI
+### Вариант 2. Без settings (ручной запуск)
+
+```bash
+anytask-scraper \
+  --credentials-file ./credentials.json \
+  --session-file ./.anytask_session.json \
+  course -c course_id -f json -o ./output
+```
+
+Повторный запуск после сохранения сессии:
+
+```bash
+anytask-scraper --session-file ./.anytask_session.json queue -c course_id
+```
+
+### Вариант 3. Через `.env`
+
+CLI не читает переменные окружения автоматически, но их можно подставить в `--username/--password`.
+
+1. Создайте `.env`:
+
+```dotenv
+ANYTASK_USERNAME=your_login
+ANYTASK_PASSWORD=your_password
+```
+
+2. Экспортируйте переменные и запустите:
+
+```bash
+set -a
+source .env
+set +a
+
+anytask-scraper \
+  -u "$ANYTASK_USERNAME" \
+  -p "$ANYTASK_PASSWORD" \
+  --session-file ./.anytask_session.json \
+  course -c course_id
+```
+
+## Возможности CLI
 
 Общий формат:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' {course|queue} [options]
+anytask-scraper [GLOBAL_OPTIONS] {course,queue,settings} ...
 ```
 
-### Подкоманда `course`
+### Глобальные опции
+
+- `-h, --help` - справка.
+- `-u, --username USERNAME` - логин Anytask.
+- `-p, --password PASSWORD` - пароль Anytask.
+- `--credentials-file CREDENTIALS_FILE` - путь к credentials-файлу (`json` или `key=value`).
+- `--session-file SESSION_FILE` - путь к файлу cookie-сессии.
+- `--status-mode {all,errors}` - показывать все статусы или только ошибки.
+- `--default-output DEFAULT_OUTPUT` - директория вывода по умолчанию для `course/queue`.
+- `--save-session`, `--no-save-session` - сохранять/не сохранять сессию в конце.
+- `--refresh-session`, `--no-refresh-session` - игнорировать сохраненную сессию и принудительно перелогиниться.
+- `--settings-file SETTINGS_FILE` - путь к файлу настроек (по умолчанию `.anytask_scraper_settings.json`).
+
+### Команда `course`
+
+Синтаксис:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' course -c COURSE_ID [COURSE_ID ...]
+anytask-scraper [GLOBAL_OPTIONS] course -c COURSE_ID [COURSE_ID ...] [OPTIONS]
 ```
 
 Опции:
 
-- `-c, --course` — один или несколько ID курсов.
-- `-o, --output` — папка для файлов (по умолчанию `.`).
-- `-f, --format` — `json | markdown | table` (по умолчанию `json`).
-- `--show` — дополнительно показать таблицу в терминале.
-- `--fetch-descriptions` — догрузить описания задач из `/task/edit/{id}` (актуально для teacher view).
+- `-c, --course` - один или несколько ID курсов (обязательно).
+- `-o, --output` - директория вывода (`--default-output` или `.` если не задано).
+- `-f, --format {json,markdown,table}` - формат вывода (по умолчанию `json`).
+- `--show` - дополнительно вывести rich-таблицу в терминал.
+- `--fetch-descriptions` - догрузить описания задач (дополнительные запросы).
 
-### Подкоманда `queue`
+Примеры:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' queue -c COURSE_ID
+anytask-scraper course -c course_id
+anytask-scraper course -c course_id 1001 -f markdown -o ./reports
+anytask-scraper course -c course_id -f table
+anytask-scraper course -c course_id --fetch-descriptions --show
+```
+
+### Команда `queue`
+
+Синтаксис:
+
+```bash
+anytask-scraper [GLOBAL_OPTIONS] queue -c COURSE_ID [OPTIONS]
 ```
 
 Опции:
 
-- `-c, --course` — ID курса.
-- `-o, --output` — папка для файлов (по умолчанию `.`).
-- `-f, --format` — `json | markdown | table`.
-- `--show` — дополнительно показать таблицу в терминале.
-- `--deep` — загрузить полные страницы сабмишнов для доступных issue.
-- `--download-files` — скачать вложения и colab-ноутбуки (автоматически включает `--deep`).
-- `--filter-task` — фильтр по названию задачи (substring).
-- `--filter-reviewer` — фильтр по имени проверяющего (substring).
-- `--filter-status` — фильтр по статусу (substring).
+- `-c, --course` - ID курса (обязательно).
+- `-o, --output` - директория вывода (`--default-output` или `.` если не задано).
+- `-f, --format {json,markdown,table}` - формат вывода (по умолчанию `json`).
+- `--show` - дополнительно вывести rich-таблицу в терминал.
+- `--deep` - загрузить полные страницы submission.
+- `--download-files` - скачать файлы из submission (автоматически включает `--deep`).
+- `--filter-task` - фильтр по названию задачи (substring).
+- `--filter-reviewer` - фильтр по имени проверяющего (substring).
+- `--filter-status` - фильтр по статусу (substring).
 
-## Форматы вывода
-
-- `json` — структурированные данные для автоматической обработки.
-- `markdown` — человекочитаемый отчёт.
-- `table` — вывод в терминал без записи файла.
-
-## Примеры
-
-### Несколько курсов за один запуск
+Примеры:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' course -c COURSE_ID_A COURSE_ID_B -o ./data
+anytask-scraper queue -c course_id
+anytask-scraper queue -c course_id -f markdown -o ./reports
+anytask-scraper queue -c course_id --deep --show
+anytask-scraper queue -c course_id --download-files -o ./downloads
+anytask-scraper queue -c course_id --filter-task "HW1" --filter-status "Waiting"
 ```
 
-### Очередь только по конкретному статусу
+### Команда `settings`
+
+Синтаксис:
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' queue -c COURSE_ID --filter-status "На проверке" --show
+anytask-scraper settings {init,show,set,clear} [OPTIONS]
 ```
 
-### Курс в markdown + показ в терминале
+#### `settings init`
+
+Создает файл настроек с рекомендованными значениями.
 
 ```bash
-anytask-scrapper -u 'USERNAME' -p 'PASSWORD' course -c COURSE_ID -f markdown --show
+anytask-scraper settings init
+```
+
+#### `settings show`
+
+Показывает текущие сохраненные настройки в JSON.
+
+```bash
+anytask-scraper settings show
+```
+
+#### `settings set`
+
+Обновляет одну или несколько настроек.
+
+Опции:
+
+- `--credentials-file`
+- `--session-file`
+- `--status-mode {all,errors}`
+- `--default-output`
+- `--save-session`, `--no-save-session`
+- `--refresh-session`, `--no-refresh-session`
+
+Примеры:
+
+```bash
+anytask-scraper settings set --session-file ./.anytask_session.json --status-mode all
+anytask-scraper settings set --no-save-session
+```
+
+#### `settings clear`
+
+Сбрасывает выбранные ключи или все ключи сразу.
+
+```bash
+anytask-scraper settings clear [keys...]
+```
+
+Допустимые `keys`:
+
+- `credentials_file`
+- `session_file`
+- `status_mode`
+- `default_output`
+- `save_session`
+- `refresh_session`
+
+Примеры:
+
+```bash
+anytask-scraper settings clear session_file status_mode
+anytask-scraper settings clear
 ```
 
 ## Использование как Python-библиотеки
 
-```python
-from anytask_scrapper import AnytaskClient, parse_course_page, save_course_json
+### Что импортировать
 
-with AnytaskClient("username", "password") as client:
-    client.login()
-    html = client.fetch_course_page(1234)
-    course = parse_course_page(html, 1234)
-    save_course_json(course, "./output")
+```python
+from anytask_scraper import (
+    AnytaskClient,
+    LoginError,
+    parse_course_page,
+    parse_submission_page,
+    extract_csrf_from_queue_page,
+    extract_issue_id_from_breadcrumb,
+    save_course_json,
+    save_course_markdown,
+    save_queue_json,
+    save_queue_markdown,
+    download_submission_files,
+)
 ```
 
-Полезные импорты:
+### Пример 1. Курс в JSON/Markdown
 
-- `AnytaskClient`, `LoginError`
-- `parse_course_page`, `parse_submission_page`, `parse_queue_filters`
-- `save_course_json`, `save_course_markdown`, `save_queue_json`, `save_queue_markdown`
-- `download_submission_files`
-- модели: `Course`, `Task`, `ReviewQueue`, `QueueEntry`, `Submission`, `Comment`
+```python
+from anytask_scraper import AnytaskClient, parse_course_page, save_course_json, save_course_markdown
+
+course_id = course_id
+
+with AnytaskClient("your_login", "your_password") as client:
+    html = client.fetch_course_page(course_id)
+    course = parse_course_page(html, course_id)
+    save_course_json(course, "./output")
+    save_course_markdown(course, "./output")
+```
+
+### Пример 2. Работа через сохраненную сессию
+
+```python
+from anytask_scraper import AnytaskClient, parse_course_page
+
+course_id = course_id
+
+with AnytaskClient() as client:
+    if not client.load_session("./.anytask_session.json"):
+        raise RuntimeError("Файл сессии не найден")
+
+    html = client.fetch_course_page(course_id)
+    course = parse_course_page(html, course_id)
+    print(course.title, len(course.tasks))
+```
+
+### Пример 3. Очередь + deep + скачивание файлов
+
+```python
+from anytask_scraper import (
+    AnytaskClient,
+    extract_csrf_from_queue_page,
+    extract_issue_id_from_breadcrumb,
+    parse_submission_page,
+    download_submission_files,
+)
+
+course_id = course_id
+
+with AnytaskClient("your_login", "your_password") as client:
+    queue_html = client.fetch_queue_page(course_id)
+    csrf = extract_csrf_from_queue_page(queue_html)
+    if not csrf:
+        raise RuntimeError("Не удалось извлечь CSRF")
+
+    rows = client.fetch_all_queue_entries(course_id, csrf)
+
+    for row in rows:
+        issue_url = str(row.get("issue_url", ""))
+        has_access = bool(row.get("has_issue_access", False))
+        if not issue_url or not has_access:
+            continue
+
+        sub_html = client.fetch_submission_page(issue_url)
+        issue_id = extract_issue_id_from_breadcrumb(sub_html)
+        if issue_id == 0:
+            continue
+
+        submission = parse_submission_page(sub_html, issue_id)
+        downloaded = download_submission_files(client, submission, "./downloads")
+        print(issue_id, len(downloaded))
+```
+
+- Клиент и ошибки: `AnytaskClient`, `LoginError`
+- Парсеры: `parse_course_page`, `parse_submission_page`, `parse_queue_filters`, `parse_task_edit_page`, `extract_csrf_from_queue_page`, `extract_issue_id_from_breadcrumb`, `format_student_folder`, `strip_html`
+- Сохранение/выгрузка: `save_course_json`, `save_course_markdown`, `save_queue_json`, `save_queue_markdown`, `download_submission_files`
+- Отображение в терминале: `display_course`, `display_queue`, `display_submission`
+- Модели: `Course`, `Task`, `ReviewQueue`, `QueueEntry`, `Submission`, `Comment`, `FileAttachment`, `QueueFilters`
 
 ## Ограничения и безопасность
 
-- Доступ к очереди/issue зависит от прав пользователя в курсе.
-- Логин/пароль передаются через аргументы CLI, учитывайте shell history и безопасность окружения.
+- Доступны только те курсы, к которым есть доступ аккаунта.
+- Доступ к очереди и submission зависит от прав пользователя в конкретном курсе.
+- Если сессия истекла, клиент попытается перелогиниться при наличии логина/пароля.
+- Не забывайте про безопаность и приятного использования :)

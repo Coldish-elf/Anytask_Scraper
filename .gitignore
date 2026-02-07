@@ -28,5 +28,10 @@ output/
 *.log
 *.har
 *.html
-tests/fixtures/*.html
-tests
+tests/
+.anytask_session.json
+.anytask_scraper_settings.json
+*.session.json
+creds.env
+credentials.env
+credentials.json

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -19,14 +22,27 @@ class LoginError(Exception):
 class AnytaskClient:
     """Authenticated anytask client."""
 
-    def __init__(self, username: str, password: str) -> None:
+    def __init__(self, username: str = "", password: str = "") -> None:
         self.username = username
         self.password = password
         self._client = httpx.Client(follow_redirects=True, timeout=30.0)
         self._authenticated = False
 
+    def _has_credentials(self) -> bool:
+        return bool(self.username and self.password)
+
+    @staticmethod
+    def _is_login_response(resp: httpx.Response) -> bool:
+        return "/accounts/login/" in str(resp.url) and "id_username" in resp.text
+
     def login(self) -> None:
         """Log in with Django form auth."""
+        if not self._has_credentials():
+            raise LoginError(
+                "No credentials available. "
+                "Provide username/password or credentials file"
+            )
+
         resp = self._client.get(LOGIN_URL)
         resp.raise_for_status()
 
@@ -48,36 +64,97 @@ class AnytaskClient:
         )
         resp.raise_for_status()
 
-        if "/accounts/login/" in str(resp.url) and "id_username" in resp.text:
-            raise LoginError("Login failed — check username and password")
+        if self._is_login_response(resp):
+            raise LoginError("Login failed: check username and password")
 
         self._authenticated = True
 
+    def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        if not self._authenticated and self._has_credentials():
+            self.login()
+
+        resp = self._client.request(method, url, **kwargs)
+
+        if self._is_login_response(resp):
+            self._authenticated = False
+            if not self._has_credentials():
+                raise LoginError("Saved session expired and no credentials were provided")
+            self.login()
+            resp = self._client.request(method, url, **kwargs)
+
+        resp.raise_for_status()
+        return resp
+
+    def load_session(self, session_path: Path | str) -> bool:
+        """Load cookie session from file."""
+        path = Path(session_path)
+        if not path.exists():
+            return False
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        cookies = raw.get("cookies", [])
+        if not isinstance(cookies, list):
+            return False
+
+        self._client.cookies.clear()
+        for item in cookies:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", ""))
+            value = str(item.get("value", ""))
+            domain = str(item.get("domain", ""))
+            cookie_path = str(item.get("path", "/"))
+            if not name:
+                continue
+            if domain:
+                self._client.cookies.set(name, value, domain=domain, path=cookie_path)
+            else:
+                self._client.cookies.set(name, value, path=cookie_path)
+
+        saved_username = str(raw.get("username", ""))
+        if not self.username and saved_username:
+            self.username = saved_username
+
+        self._authenticated = True
+        return True
+
+    def save_session(self, session_path: Path | str) -> None:
+        """Save cookie session to file."""
+        path = Path(session_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        cookies: list[dict[str, str]] = []
+        for cookie in self._client.cookies.jar:
+            cookies.append(
+                {
+                    "name": cookie.name or "",
+                    "value": cookie.value or "",
+                    "domain": cookie.domain or "",
+                    "path": cookie.path or "/",
+                }
+            )
+
+        payload = {
+            "username": self.username,
+            "cookies": cookies,
+        }
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
     def fetch_course_page(self, course_id: int) -> str:
         """Return course page HTML."""
-        if not self._authenticated:
-            self.login()
-        resp = self._client.get(f"{BASE_URL}/course/{course_id}")
-        resp.raise_for_status()
+        resp = self._request("GET", f"{BASE_URL}/course/{course_id}")
         return resp.text
 
     def fetch_task_description(self, task_id: int) -> str:
         """Return task description from /task/edit/{id}."""
-        if not self._authenticated:
-            self.login()
+        from anytask_scraper.parser import parse_task_edit_page
 
-        from anytask_scrapper.parser import parse_task_edit_page
-
-        resp = self._client.get(f"{BASE_URL}/task/edit/{task_id}")
-        resp.raise_for_status()
+        resp = self._request("GET", f"{BASE_URL}/task/edit/{task_id}")
         return parse_task_edit_page(resp.text)
 
     def fetch_queue_page(self, course_id: int) -> str:
         """Return queue page HTML."""
-        if not self._authenticated:
-            self.login()
-        resp = self._client.get(f"{BASE_URL}/course/{course_id}/queue?update_time=")
-        resp.raise_for_status()
+        resp = self._request("GET", f"{BASE_URL}/course/{course_id}/queue?update_time=")
         return resp.text
 
     def fetch_queue_ajax(
@@ -89,8 +166,6 @@ class AnytaskClient:
         filter_query: str = "",
     ) -> dict[str, object]:
         """Return one queue page from AJAX API."""
-        if not self._authenticated:
-            self.login()
         data = {
             "csrfmiddlewaretoken": csrf_token,
             "lang": "ru",
@@ -102,12 +177,12 @@ class AnytaskClient:
             "filter": filter_query,
             "order": '[{"column":3,"dir":"desc"}]',
         }
-        resp = self._client.post(
+        resp = self._request(
+            "POST",
             f"{BASE_URL}/course/ajax_get_queue",
             data=data,
             headers={"Referer": f"{BASE_URL}/course/{course_id}/queue"},
         )
-        resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
     def fetch_all_queue_entries(
@@ -136,39 +211,48 @@ class AnytaskClient:
 
     def fetch_submission_page(self, issue_url: str) -> str:
         """Return issue page HTML."""
-        if not self._authenticated:
-            self.login()
         url = issue_url if issue_url.startswith("http") else f"{BASE_URL}{issue_url}"
-        resp = self._client.get(url)
-        resp.raise_for_status()
+        resp = self._request("GET", url)
         return resp.text
 
     def download_file(self, url: str, output_path: str) -> None:
         """Download file to local path."""
-        if not self._authenticated:
+        if not self._authenticated and self._has_credentials():
             self.login()
-        full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
-        from pathlib import Path
 
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
         with self._client.stream("GET", full_url) as resp:
+            if self._is_login_response(resp):
+                self._authenticated = False
+                if not self._has_credentials():
+                    raise LoginError("Saved session expired and no credentials were provided")
+                self.login()
+                with self._client.stream("GET", full_url) as retried:
+                    retried.raise_for_status()
+                    with output.open("wb") as f:
+                        for chunk in retried.iter_bytes():
+                            f.write(chunk)
+                return
+
             resp.raise_for_status()
-            with open(output_path, "wb") as f:
+            with output.open("wb") as f:
                 for chunk in resp.iter_bytes():
                     f.write(chunk)
 
     def download_colab_notebook(self, colab_url: str, output_path: str) -> bool:
         """Try downloading a Colab notebook as .ipynb."""
-        import re
-        from pathlib import Path
-
         m = re.search(r"drive/([a-zA-Z0-9_-]+)", colab_url)
         if m is None:
             return False
+
         file_id = m.group(1)
         export_url = f"https://docs.google.com/uc?export=download&id={file_id}"
         try:
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            output = Path(output_path)
+            output.parent.mkdir(parents=True, exist_ok=True)
             with httpx.Client(follow_redirects=True, timeout=30.0) as gc:
                 resp = gc.get(export_url)
                 if resp.status_code != 200:
@@ -176,8 +260,7 @@ class AnytaskClient:
                 content = resp.content
                 if not content.strip().startswith(b"{"):
                     return False
-                with open(output_path, "wb") as f:
-                    f.write(content)
+                output.write_bytes(content)
                 return True
         except Exception:
             return False

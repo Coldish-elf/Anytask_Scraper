@@ -9,8 +9,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from anytask_scrapper.models import Course, ReviewQueue, Submission, Task
-from anytask_scrapper.parser import strip_html
+from anytask_scraper.models import Course, ReviewQueue, Submission, Task
+from anytask_scraper.parser import strip_html
 
 _STATUS_STYLES: dict[str, str] = {
     "Зачтено": "bold green",

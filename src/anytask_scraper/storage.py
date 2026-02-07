@@ -6,8 +6,8 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from anytask_scrapper.models import Course, ReviewQueue, Submission, Task
-from anytask_scrapper.parser import format_student_folder, strip_html
+from anytask_scraper.models import Course, ReviewQueue, Submission, Task
+from anytask_scraper.parser import format_student_folder, strip_html
 
 
 def save_course_json(course: Course, output_dir: Path | str = ".") -> Path:
@@ -151,7 +151,7 @@ def download_submission_files(
     base_dir: Path | str,
 ) -> dict[str, Path]:
     """Download files from submission comments."""
-    from anytask_scrapper.client import AnytaskClient
+    from anytask_scraper.client import AnytaskClient
 
     assert isinstance(client, AnytaskClient)
     base_dir = Path(base_dir)
