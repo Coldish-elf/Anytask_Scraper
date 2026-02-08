@@ -91,6 +91,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    subparsers.add_parser("tui", help="Launch interactive TUI")
+
     course_p = subparsers.add_parser("course", help="Scrape course tasks")
     course_p.add_argument("--course", "-c", type=int, nargs="+", required=True, help="Course ID(s)")
     course_p.add_argument(
@@ -511,6 +513,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "settings":
         _run_settings(args)
+        return
+
+    if args.command == "tui":
+        from anytask_scraper.tui import run
+
+        run()
         return
 
     try:

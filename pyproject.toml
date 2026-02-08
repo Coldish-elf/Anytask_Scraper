@@ -12,6 +12,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "rich>=13.0",
+    "textual>=0.70",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
 
 [project.scripts]
 anytask-scraper = "anytask_scraper.cli:main"
+anytask-tui = "anytask_scraper.tui:run"
 
 [tool.ruff]
 target-version = "py310"
