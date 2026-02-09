@@ -33,9 +33,15 @@ def parse_course_page(html: str, course_id: int) -> Course:
     if tasks_tab is None:
         return Course(course_id=course_id, title=title, teachers=teachers)
 
-    has_groups = tasks_tab.find("div", id=re.compile(r"^collapse_group_\d+$")) is not None
+    has_groups = (
+        tasks_tab.find("div", id=re.compile(r"^collapse_group_\d+$")) is not None
+    )
 
-    tasks = _parse_teacher_tasks(tasks_tab) if has_groups else _parse_student_tasks(tasks_tab)
+    tasks = (
+        _parse_teacher_tasks(tasks_tab)
+        if has_groups
+        else _parse_student_tasks(tasks_tab)
+    )
 
     return Course(course_id=course_id, title=title, teachers=teachers, tasks=tasks)
 
@@ -75,7 +81,9 @@ def _parse_student_tasks(tasks_tab: Tag) -> list[Task]:
         return tasks
 
     for task_div in tasks_table.find_all("div", class_="tasks-list"):
-        columns = [c for c in task_div.children if isinstance(c, Tag) and c.name == "div"]
+        columns = [
+            c for c in task_div.children if isinstance(c, Tag) and c.name == "div"
+        ]
         if len(columns) < 4:
             continue
 
@@ -135,7 +143,9 @@ def _parse_teacher_tasks(tasks_tab: Tag) -> list[Task]:
         section_name = group_header if group_header else ""
 
         for task_div in group_div.find_all("div", class_="tasks-list"):
-            columns = [c for c in task_div.children if isinstance(c, Tag) and c.name == "div"]
+            columns = [
+                c for c in task_div.children if isinstance(c, Tag) and c.name == "div"
+            ]
             if len(columns) < 4:
                 continue
 
@@ -151,7 +161,9 @@ def _parse_teacher_tasks(tasks_tab: Tag) -> list[Task]:
                     task_id = int(m.group(1))
 
             score_span = columns[2].find("span", class_="label")
-            max_score = _parse_float(score_span.get_text(strip=True)) if score_span else None
+            max_score = (
+                _parse_float(score_span.get_text(strip=True)) if score_span else None
+            )
 
             deadline = _parse_deadline(columns[3].get_text())
 
@@ -445,7 +457,11 @@ def _parse_comment_files(container: Tag) -> list[FileAttachment]:
                     break
             if not download_url and items:
                 download_url = str(items[0].get("href", ""))
-        files.append(FileAttachment(filename=filename, download_url=download_url, is_notebook=True))
+        files.append(
+            FileAttachment(
+                filename=filename, download_url=download_url, is_notebook=True
+            )
+        )
 
     for a_tag in files_div.find_all("a", recursive=True):
         if a_tag.find_parent("div", class_="ipynb-file-link"):
@@ -454,7 +470,9 @@ def _parse_comment_files(container: Tag) -> list[FileAttachment]:
         filename = a_tag.get_text(strip=True)
         if href and filename:
             is_nb = filename.endswith(".ipynb")
-            files.append(FileAttachment(filename=filename, download_url=href, is_notebook=is_nb))
+            files.append(
+                FileAttachment(filename=filename, download_url=href, is_notebook=is_nb)
+            )
 
     return files
 

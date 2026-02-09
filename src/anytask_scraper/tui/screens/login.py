@@ -66,7 +66,11 @@ class LoginScreen(Screen[None]):
 
         event.prevent_default()
         idx = focusable.index(current_id)
-        next_idx = (idx + 1) % len(focusable) if event.key == "down" else (idx - 1) % len(focusable)
+        next_idx = (
+            (idx + 1) % len(focusable)
+            if event.key == "down"
+            else (idx - 1) % len(focusable)
+        )
         self.query_one(focusable[next_idx]).focus()
 
     @on(Input.Submitted, "#username")
@@ -103,7 +107,9 @@ class LoginScreen(Screen[None]):
             client.login()
             self.app.client = client  # type: ignore[attr-defined]
             self.app.session_path = ""  # type: ignore[attr-defined]
-            self.app.call_from_thread(self._set_status, f"Logged in as {username}", "success")
+            self.app.call_from_thread(
+                self._set_status, f"Logged in as {username}", "success"
+            )
             self.app.call_from_thread(self._go_main)
         except LoginError as e:
             self.app.call_from_thread(self._set_status, f"Login failed: {e}", "error")
@@ -116,7 +122,9 @@ class LoginScreen(Screen[None]):
             client = AnytaskClient()
             success = client.load_session(session_path)
             if not success:
-                self.app.call_from_thread(self._set_status, "Failed to load session", "error")
+                self.app.call_from_thread(
+                    self._set_status, "Failed to load session", "error"
+                )
                 return
             self.app.client = client  # type: ignore[attr-defined]
             self.app.session_path = session_path  # type: ignore[attr-defined]

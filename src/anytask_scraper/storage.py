@@ -16,7 +16,9 @@ def save_course_json(course: Course, output_dir: Path | str = ".") -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"course_{course.course_id}.json"
-    path.write_text(json.dumps(asdict(course), indent=2, default=str, ensure_ascii=False))
+    path.write_text(
+        json.dumps(asdict(course), indent=2, default=str, ensure_ascii=False)
+    )
     return path
 
 
@@ -55,7 +57,9 @@ def _md_student_tasks(tasks: list[Task], lines: list[str]) -> None:
     lines.append("|---|-------|------:|--------|----------|")
     for i, task in enumerate(tasks, 1):
         score = str(task.score) if task.score is not None else "-"
-        lines.append(f"| {i} | {task.title} | {score} | {task.status} | {_md_deadline(task)} |")
+        lines.append(
+            f"| {i} | {task.title} | {score} | {task.status} | {_md_deadline(task)} |"
+        )
 
     lines.append("")
     for task in tasks:
@@ -87,7 +91,9 @@ def save_queue_json(queue: ReviewQueue, output_dir: Path | str = ".") -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"queue_{queue.course_id}.json"
-    path.write_text(json.dumps(asdict(queue), indent=2, default=str, ensure_ascii=False))
+    path.write_text(
+        json.dumps(asdict(queue), indent=2, default=str, ensure_ascii=False)
+    )
     return path
 
 
@@ -154,13 +160,17 @@ def save_course_csv(course: Course, output_dir: Path | str = ".") -> Path:
             writer.writerow(["#", "Title", "Section", "Max Score", "Deadline"])
             for i, task in enumerate(course.tasks, 1):
                 max_score = str(task.max_score) if task.max_score is not None else ""
-                deadline = task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
+                deadline = (
+                    task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
+                )
                 writer.writerow([i, task.title, task.section, max_score, deadline])
         else:
             writer.writerow(["#", "Title", "Score", "Status", "Deadline"])
             for i, task in enumerate(course.tasks, 1):
                 score = str(task.score) if task.score is not None else ""
-                deadline = task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
+                deadline = (
+                    task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
+                )
                 writer.writerow([i, task.title, score, task.status, deadline])
     return path
 
@@ -173,7 +183,9 @@ def save_queue_csv(queue: ReviewQueue, output_dir: Path | str = ".") -> Path:
 
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"])
+        writer.writerow(
+            ["#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"]
+        )
         for i, e in enumerate(queue.entries, 1):
             writer.writerow(
                 [

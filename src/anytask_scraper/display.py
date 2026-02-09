@@ -53,7 +53,9 @@ def display_course(course: Course, console: Console | None = None) -> None:
 
     teachers_line = ", ".join(course.teachers) if course.teachers else "-"
     header = f"[bold]{course.title}[/bold]\nTeachers: {teachers_line}"
-    console.print(Panel(header, title=f"Course {course.course_id}", border_style="blue"))
+    console.print(
+        Panel(header, title=f"Course {course.course_id}", border_style="blue")
+    )
 
     if not course.tasks:
         console.print("[dim]No tasks found.[/dim]")
@@ -118,7 +120,11 @@ def display_task_detail(task: Task, console: Console | None = None) -> None:
     if console is None:
         console = Console()
 
-    desc = strip_html(task.description) if task.description else "[dim]No description[/dim]"
+    desc = (
+        strip_html(task.description)
+        if task.description
+        else "[dim]No description[/dim]"
+    )
     console.print(Panel(desc, title=task.title, border_style="green"))
 
 
@@ -190,8 +196,14 @@ def display_submission(submission: Submission, console: Console | None = None) -
 
     for i, comment in enumerate(submission.comments, 1):
         ts = str(comment.timestamp) if comment.timestamp else "-"
-        after = " [bold red][AFTER DEADLINE][/bold red]" if comment.is_after_deadline else ""
-        console.print(f"\n  [bold]{i}. {comment.author_name}[/bold] [dim]{ts}[/dim]{after}")
+        after = (
+            " [bold red][AFTER DEADLINE][/bold red]"
+            if comment.is_after_deadline
+            else ""
+        )
+        console.print(
+            f"\n  [bold]{i}. {comment.author_name}[/bold] [dim]{ts}[/dim]{after}"
+        )
         if comment.content_html:
             text = strip_html(comment.content_html)
             if text:

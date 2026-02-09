@@ -61,8 +61,16 @@ class SubmissionScreen(Screen[None]):
                     if comment.is_after_deadline:
                         card.add_class("-after-deadline")
 
-                    ts = comment.timestamp.strftime("%d.%m.%Y %H:%M") if comment.timestamp else "-"
-                    after_tag = " [bold red](LATE)[/bold red]" if comment.is_after_deadline else ""
+                    ts = (
+                        comment.timestamp.strftime("%d.%m.%Y %H:%M")
+                        if comment.timestamp
+                        else "-"
+                    )
+                    after_tag = (
+                        " [bold red](LATE)[/bold red]"
+                        if comment.is_after_deadline
+                        else ""
+                    )
 
                     header_label = Label(
                         f"[bold]{comment.author_name}[/bold]  [dim]{ts}[/dim]{after_tag}",
@@ -78,13 +86,19 @@ class SubmissionScreen(Screen[None]):
                     if comment.files:
                         files_str = "\n".join(f"  {f.filename}" for f in comment.files)
                         card.compose_add_child(
-                            Label(f"[dim]Files:\n{files_str}[/dim]", classes="comment-files")
+                            Label(
+                                f"[dim]Files:\n{files_str}[/dim]",
+                                classes="comment-files",
+                            )
                         )
 
                     if comment.links:
                         links_str = "\n".join(f"  {lnk}" for lnk in comment.links)
                         card.compose_add_child(
-                            Label(f"[dim]Links:\n{links_str}[/dim]", classes="comment-links")
+                            Label(
+                                f"[dim]Links:\n{links_str}[/dim]",
+                                classes="comment-links",
+                            )
                         )
 
                     yield card

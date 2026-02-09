@@ -44,6 +44,7 @@ from anytask_scraper.parser import (
     strip_html,
 )
 from anytask_scraper.storage import (
+    download_submission_files,
     save_course_csv,
     save_course_json,
     save_course_markdown,
@@ -69,6 +70,24 @@ _QUEUE_STATUS_COLORS: dict[str, str] = {
     "default": "dim",
     "primary": "bold blue",
 }
+
+
+def _parse_mark(mark: str) -> float:
+    """Parse grade/mark string to float for proper numeric sorting."""
+    try:
+        return float(mark.replace(",", "."))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _parse_update_time(time_str: str) -> datetime:
+    """Parse update_time string (DD-MM-YYYY or DD-MM-YYYY HH:MM) to datetime."""
+    for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(time_str, fmt)
+        except ValueError:
+            continue
+    return datetime.min
 
 
 def _styled_status(status: str) -> Text:
@@ -205,6 +224,7 @@ class MainScreen(Screen[None]):
                             yield RadioButton("JSON", id="json-radio", value=True)
                             yield RadioButton("Markdown", id="md-radio")
                             yield RadioButton("CSV", id="csv-radio")
+                            yield RadioButton("Files Only", id="files-radio")
                     with Container(classes="option-group", id="export-filter-group"):
                         yield Label("Filter (optional):", classes="option-label")
                         yield Select[str](
@@ -328,7 +348,7 @@ class MainScreen(Screen[None]):
 
     def action_tab_export(self) -> None:
         self.query_one("#main-tabs", TabbedContent).active = "export-tab"
-        self.query_one("#format-set", RadioSet).focus()
+        self.query_one("#export-type-set", RadioSet).focus()
 
     @on(TabbedContent.TabActivated, "#main-tabs")
     def _tab_activated(self, event: TabbedContent.TabActivated) -> None:
@@ -343,11 +363,11 @@ class MainScreen(Screen[None]):
         active = tabs.active
         zones = ["#course-list"]
         if active == "tasks-tab":
-            zones += ["#task-filter-bar", "#task-table"]
+            zones += ["#task-table", "#task-filter-bar"]
         elif active == "queue-tab":
-            zones += ["#queue-filter-bar", "#queue-table"]
+            zones += ["#queue-table", "#queue-filter-bar"]
         elif active == "export-tab":
-            zones += ["#format-set", "#output-dir-input"]
+            zones += ["#export-type-set", "#format-set", "#output-dir-input"]
         return zones
 
     def action_cycle_focus(self) -> None:
@@ -469,6 +489,9 @@ class MainScreen(Screen[None]):
             self.query_one("#output-dir-input", Input).focus()
 
     def action_filter_next(self) -> None:
+        # Let Input handle ctrl+right for word navigation
+        if isinstance(self.focused, Input):
+            return
         tabs = self.query_one("#main-tabs", TabbedContent)
         active = tabs.active
         if active == "tasks-tab":
@@ -477,6 +500,9 @@ class MainScreen(Screen[None]):
             self.query_one("#queue-filter-bar", QueueFilterBar).focus_next_filter()
 
     def action_filter_prev(self) -> None:
+        # Let Input handle ctrl+left for word navigation
+        if isinstance(self.focused, Input):
+            return
         tabs = self.query_one("#main-tabs", TabbedContent)
         active = tabs.active
         if active == "tasks-tab":
@@ -639,6 +665,18 @@ class MainScreen(Screen[None]):
         self.filtered_queue_entries = []
         self._rebuild_queue_table()
         self._clear_queue_detail()
+
+        # Clear export status on course switch
+        self._set_export_status("")
+
+        # Enable/disable Queue tab and Queue/Submissions export based on teacher access
+        try:
+            queue_export_radio = self.query_one("#queue-export-radio", RadioButton)
+            subs_export_radio = self.query_one("#subs-export-radio", RadioButton)
+            queue_export_radio.disabled = not self.is_teacher_view
+            subs_export_radio.disabled = not self.is_teacher_view
+        except Exception:
+            pass
 
         if self.is_teacher_view:
             self.query_one("#queue-info-label", Label).update(
@@ -928,8 +966,8 @@ class MainScreen(Screen[None]):
             2: lambda e: e.task_title.lower(),
             3: lambda e: e.status_name.lower(),
             4: lambda e: e.responsible_name.lower(),
-            5: lambda e: e.update_time,
-            6: lambda e: e.mark,
+            5: lambda e: _parse_update_time(e.update_time),
+            6: lambda e: _parse_mark(e.mark),
         }
         key_fn = key_map.get(col)
         if key_fn:
@@ -961,6 +999,13 @@ class MainScreen(Screen[None]):
         task_select.set_options([])
         status_select.set_options([])
         reviewer_select.set_options([])
+
+        # Toggle Files Only radio visibility - only for Submissions
+        try:
+            files_radio = self.query_one("#files-radio", RadioButton)
+            files_radio.disabled = export_type != "subs-export-radio"
+        except Exception:
+            pass
 
         if export_type == "tasks-export-radio":
             statuses = sorted({t.status for t in self.all_tasks if t.status})
@@ -1001,7 +1046,12 @@ class MainScreen(Screen[None]):
             self._set_export_status("Select a format", "error")
             return
 
-        fmt_map = {"json-radio": "json", "md-radio": "markdown", "csv-radio": "csv"}
+        fmt_map = {
+            "json-radio": "json",
+            "md-radio": "markdown",
+            "csv-radio": "csv",
+            "files-radio": "files",
+        }
         fmt = fmt_map.get(fmt_btn.id or "", "json")
 
         type_set = self.query_one("#export-type-set", RadioSet)
@@ -1091,24 +1141,86 @@ class MainScreen(Screen[None]):
                     saved = save_queue_markdown(queue, output_path)
 
             elif export_type == "subs-export-radio":
-                cache = self.app.queue_cache.get(course_id)  # type: ignore[attr-defined]
-                if not cache or not cache.submissions:
+                # Filter queue entries first
+                entries = list(self.all_queue_entries)
+                if filters.get("task"):
+                    entries = [e for e in entries if e.task_title == filters["task"]]
+                if filters.get("status"):
+                    entries = [e for e in entries if e.status_name == filters["status"]]
+                if filters.get("reviewer"):
+                    entries = [
+                        e for e in entries if e.responsible_name == filters["reviewer"]
+                    ]
+
+                # Only entries with issue access can be fetched
+                accessible_entries = [
+                    e for e in entries if e.has_issue_access and e.issue_url
+                ]
+                if not accessible_entries:
                     self.app.call_from_thread(
                         self._set_export_status,
-                        "No submissions loaded. Open queue entries first.",
+                        "No accessible submissions found matching filters.",
                         "error",
                     )
                     return
 
-                subs = list(cache.submissions.values())
-                if filters.get("task"):
-                    subs = [s for s in subs if s.task_title == filters["task"]]
-                if filters.get("status"):
-                    subs = [s for s in subs if s.status == filters["status"]]
-                if filters.get("reviewer"):
-                    subs = [s for s in subs if s.reviewer_name == filters["reviewer"]]
+                client = self.app.client  # type: ignore[attr-defined]
+                if not client:
+                    self.app.call_from_thread(
+                        self._set_export_status,
+                        "Not logged in",
+                        "error",
+                    )
+                    return
 
-                if fmt == "csv":
+                # Fetch all submissions
+                subs: list[Submission] = []
+                total = len(accessible_entries)
+                for i, entry in enumerate(accessible_entries, 1):
+                    self.app.call_from_thread(
+                        self._set_export_status,
+                        f"Fetching submissions: {i}/{total}...",
+                        "info",
+                    )
+                    try:
+                        sub_html = client.fetch_submission_page(entry.issue_url)
+                        issue_id = extract_issue_id_from_breadcrumb(sub_html)
+                        if issue_id == 0:
+                            continue
+                        sub = parse_submission_page(sub_html, issue_id)
+                        subs.append(sub)
+                    except Exception:
+                        continue  # Skip failed fetches
+
+                if not subs:
+                    self.app.call_from_thread(
+                        self._set_export_status,
+                        "No submissions could be fetched.",
+                        "error",
+                    )
+                    return
+
+                # Download files to student folders
+                self.app.call_from_thread(
+                    self._set_export_status,
+                    f"Downloading files for {len(subs)} submissions...",
+                    "info",
+                )
+                total_files = 0
+                for sub in subs:
+                    downloaded = download_submission_files(client, sub, output_path)
+                    total_files += len(downloaded)
+
+                # Save in requested format (or skip if files-only)
+                if fmt == "files":
+                    # Files-only: just download files, no JSON/MD/CSV output
+                    self.app.call_from_thread(
+                        self._set_export_status,
+                        f"Downloaded {total_files} files to {output_path}",
+                        "success",
+                    )
+                    return
+                elif fmt == "csv":
                     saved = save_submissions_csv(subs, course_id, output_path)
                 elif fmt == "json":
                     import json as json_mod
@@ -1129,6 +1241,13 @@ class MainScreen(Screen[None]):
                         submissions={s.student_url or str(s.issue_id): s for s in subs},
                     )
                     saved = save_queue_markdown(queue, output_path)
+
+                self.app.call_from_thread(
+                    self._set_export_status,
+                    f"Saved: {saved.name if hasattr(saved, 'name') else saved} ({total_files} files downloaded)",
+                    "success",
+                )
+                return
             else:
                 self.app.call_from_thread(
                     self._set_export_status, "Unknown export type", "error"
@@ -1395,7 +1514,26 @@ class MainScreen(Screen[None]):
 
     def _rebuild_queue_table(self) -> None:
         table = self.query_one("#queue-table", DataTable)
-        table.clear()
+        table.clear(columns=True)
+
+        # Build column labels with sort indicators
+        base_columns = (
+            "#",
+            "Student",
+            "Task",
+            "Status",
+            "Reviewer",
+            "Updated",
+            "Grade",
+        )
+        labels = []
+        for i, col in enumerate(base_columns):
+            if self._queue_sort_column == i:
+                indicator = "▼" if self._queue_sort_reverse else "▲"
+                labels.append(f"{col} {indicator}")
+            else:
+                labels.append(col)
+        table.add_columns(*labels)
 
         for idx, entry in enumerate(self.filtered_queue_entries, 1):
             style = _QUEUE_STATUS_COLORS.get(entry.status_color, "")

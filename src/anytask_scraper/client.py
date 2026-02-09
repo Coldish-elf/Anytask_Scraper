@@ -88,7 +88,9 @@ class AnytaskClient:
         if self._is_login_response(resp):
             self._authenticated = False
             if not self._has_credentials():
-                raise LoginError("Saved session expired and no credentials were provided")
+                raise LoginError(
+                    "Saved session expired and no credentials were provided"
+                )
             self.login()
             resp = self._client.request(method, url, **kwargs)
 
@@ -148,7 +150,9 @@ class AnytaskClient:
             "username": self.username,
             "cookies": cookies,
         }
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     def fetch_course_page(self, course_id: int) -> str:
         """Return course page HTML."""
@@ -207,7 +211,11 @@ class AnytaskClient:
         page_size = 100
         while True:
             result = self.fetch_queue_ajax(
-                course_id, csrf_token, start=start, length=page_size, filter_query=filter_query
+                course_id,
+                csrf_token,
+                start=start,
+                length=page_size,
+                filter_query=filter_query,
             )
             data = result.get("data", [])
             if not isinstance(data, list):
@@ -231,7 +239,9 @@ class AnytaskClient:
             if self._is_login_response(resp):
                 self._authenticated = False
                 if not self._has_credentials():
-                    raise LoginError("Saved session expired and no credentials were provided")
+                    raise LoginError(
+                        "Saved session expired and no credentials were provided"
+                    )
                 self.login()
                 with self._client.stream("GET", url) as retried:
                     retried.raise_for_status()
@@ -246,7 +256,9 @@ class AnytaskClient:
             return resp
 
     @staticmethod
-    def _validate_downloaded_file(path: Path, content_type: str, expected_suffix: str) -> str:
+    def _validate_downloaded_file(
+        path: Path, content_type: str, expected_suffix: str
+    ) -> str:
         """Validate downloaded file. Returns empty string if OK, or reason if invalid."""
         if not path.exists() or path.stat().st_size == 0:
             return "empty_file"
@@ -268,7 +280,9 @@ class AnytaskClient:
                 return "jupyter_server_html"
             return "html_instead_of_file"
 
-        if expected_suffix.lower() == ".ipynb" and not head_lower.lstrip().startswith(b"{"):
+        if expected_suffix.lower() == ".ipynb" and not head_lower.lstrip().startswith(
+            b"{"
+        ):
             return "invalid_notebook_format"
 
         if (
@@ -297,7 +311,9 @@ class AnytaskClient:
             raise
         except Exception as e:
             tmp_path.unlink(missing_ok=True)
-            return DownloadResult(success=False, path=output_path, reason=f"download_error: {e}")
+            return DownloadResult(
+                success=False, path=output_path, reason=f"download_error: {e}"
+            )
 
         content_type = resp.headers.get("content-type", "")
         problem = self._validate_downloaded_file(tmp_path, content_type, output.suffix)
@@ -308,11 +324,17 @@ class AnytaskClient:
         tmp_path.rename(output)
         return DownloadResult(success=True, path=output_path, reason="ok")
 
-    def download_colab_notebook(self, colab_url: str, output_path: str) -> DownloadResult:
+    def download_colab_notebook(
+        self, colab_url: str, output_path: str
+    ) -> DownloadResult:
         """Try downloading a Colab notebook as .ipynb."""
-        m = _COLAB_FILE_ID_RE.search(colab_url) or re.search(r"drive/([a-zA-Z0-9_-]+)", colab_url)
+        m = _COLAB_FILE_ID_RE.search(colab_url) or re.search(
+            r"drive/([a-zA-Z0-9_-]+)", colab_url
+        )
         if m is None:
-            return DownloadResult(success=False, path=output_path, reason="no_file_id_in_url")
+            return DownloadResult(
+                success=False, path=output_path, reason="no_file_id_in_url"
+            )
 
         file_id = m.group(1)
         output = Path(output_path)
@@ -335,9 +357,9 @@ class AnytaskClient:
 
                     content = resp.content
                     content_lower = content[:1024].lower().strip()
-                    if content_lower.startswith(b"<!doctype html") or content_lower.startswith(
-                        b"<html"
-                    ):
+                    if content_lower.startswith(
+                        b"<!doctype html"
+                    ) or content_lower.startswith(b"<html"):
                         confirm_match = re.search(rb"confirm=([a-zA-Z0-9_-]+)", content)
                         if confirm_match:
                             confirm_url = (
@@ -345,10 +367,15 @@ class AnytaskClient:
                                 f"&export=download&confirm={confirm_match.group(1).decode()}"
                             )
                             resp2 = gc.get(confirm_url)
-                            if resp2.status_code == 200 and resp2.content.strip().startswith(b"{"):
+                            if (
+                                resp2.status_code == 200
+                                and resp2.content.strip().startswith(b"{")
+                            ):
                                 output.write_bytes(resp2.content)
                                 return DownloadResult(
-                                    success=True, path=output_path, reason="ok_after_confirm"
+                                    success=True,
+                                    path=output_path,
+                                    reason="ok_after_confirm",
                                 )
                         last_reason = "google_drive_html_page"
                         continue

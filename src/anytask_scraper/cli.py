@@ -97,7 +97,9 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("tui", help="Launch interactive TUI")
 
     course_p = subparsers.add_parser("course", help="Scrape course tasks")
-    course_p.add_argument("--course", "-c", type=int, nargs="+", required=True, help="Course ID(s)")
+    course_p.add_argument(
+        "--course", "-c", type=int, nargs="+", required=True, help="Course ID(s)"
+    )
     course_p.add_argument(
         "--output",
         "-o",
@@ -151,8 +153,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Download files from submissions (implies --deep)",
     )
     queue_p.add_argument("--filter-task", help="Filter by task title (substring match)")
-    queue_p.add_argument("--filter-reviewer", help="Filter by reviewer name (substring match)")
-    queue_p.add_argument("--filter-status", help="Filter by status name (substring match)")
+    queue_p.add_argument(
+        "--filter-reviewer", help="Filter by reviewer name (substring match)"
+    )
+    queue_p.add_argument(
+        "--filter-status", help="Filter by status name (substring match)"
+    )
 
     settings_p = subparsers.add_parser("settings", help="Manage saved defaults")
     settings_sub = settings_p.add_subparsers(dest="settings_action", required=True)
@@ -163,7 +169,9 @@ def _build_parser() -> argparse.ArgumentParser:
     set_p = settings_sub.add_parser("set", help="Set one or more settings")
     set_p.add_argument("--credentials-file", dest="set_credentials_file")
     set_p.add_argument("--session-file", dest="set_session_file")
-    set_p.add_argument("--status-mode", dest="set_status_mode", choices=["all", "errors"])
+    set_p.add_argument(
+        "--status-mode", dest="set_status_mode", choices=["all", "errors"]
+    )
     set_p.add_argument("--default-output", dest="set_default_output")
     set_p.add_argument(
         "--save-session",
@@ -253,7 +261,9 @@ def _save_settings(path: str, settings: dict[str, Any]) -> None:
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {k: settings[k] for k in SETTINGS_KEYS if k in settings}
-    file_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    file_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _merge_runtime_settings(args: argparse.Namespace, settings: dict[str, Any]) -> None:
@@ -322,7 +332,9 @@ def _run_settings(args: argparse.Namespace) -> None:
 
     if args.settings_action == "init":
         _save_settings(args.settings_file, dict(INIT_DEFAULTS))
-        console.print(f"[green][OK][/green] Initialized settings -> {args.settings_file}")
+        console.print(
+            f"[green][OK][/green] Initialized settings -> {args.settings_file}"
+        )
         return
 
     if args.settings_action == "show":
@@ -377,14 +389,18 @@ def _run_course(args: argparse.Namespace, client: AnytaskClient) -> None:
             course = parse_course_page(html, course_id)
 
         if args.fetch_descriptions:
-            tasks_needing_desc = [t for t in course.tasks if not t.description and t.edit_url]
+            tasks_needing_desc = [
+                t for t in course.tasks if not t.description and t.edit_url
+            ]
             if tasks_needing_desc:
                 with console.status(
                     f"[bold blue]Fetching {len(tasks_needing_desc)} task descriptions..."
                 ):
                     for task in tasks_needing_desc:
                         try:
-                            task.description = client.fetch_task_description(task.task_id)
+                            task.description = client.fetch_task_description(
+                                task.task_id
+                            )
                         except Exception as e:
                             err_console.print(
                                 f"[yellow]Warning:[/yellow] "
@@ -447,7 +463,9 @@ def _run_queue(args: argparse.Namespace, client: AnytaskClient) -> None:
         queue_html = client.fetch_queue_page(course_id)
         csrf = extract_csrf_from_queue_page(queue_html)
         if not csrf:
-            err_console.print("[bold red]Error:[/bold red] Could not extract CSRF token")
+            err_console.print(
+                "[bold red]Error:[/bold red] Could not extract CSRF token"
+            )
             sys.exit(1)
 
     with console.status("[bold blue]Fetching queue entries..."):
@@ -470,7 +488,11 @@ def _run_queue(args: argparse.Namespace, client: AnytaskClient) -> None:
     _print_ok(
         args,
         f"Queue: {len(entries)} entries"
-        + (f" (filtered from {len(raw_entries)})" if len(entries) != len(raw_entries) else ""),
+        + (
+            f" (filtered from {len(raw_entries)})"
+            if len(entries) != len(raw_entries)
+            else ""
+        ),
     )
 
     if args.deep:

@@ -249,6 +249,15 @@ RadioSet {
     height: auto;
 }
 
+RadioButton:disabled {
+    color: $text-disabled;
+    text-opacity: 50%;
+}
+
+RadioButton:disabled .toggle--label {
+    color: $text-disabled;
+}
+
 #output-dir-input {
     width: 100%;
     margin-top: 1;

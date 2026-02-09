@@ -90,8 +90,12 @@ class TaskFilterBar(Widget):
     def restore_state(self, state: dict[str, Any]) -> None:
         """Restore filter values from a previously saved dict, then emit Changed."""
         self.query_one("#task-filter-text", Input).value = state.get("text", "")
-        self.query_one("#task-filter-status", Select).value = state.get("status", Select.BLANK)
-        self.query_one("#task-filter-section", Select).value = state.get("section", Select.BLANK)
+        self.query_one("#task-filter-status", Select).value = state.get(
+            "status", Select.BLANK
+        )
+        self.query_one("#task-filter-section", Select).value = state.get(
+            "section", Select.BLANK
+        )
         self._emit_changed()
 
     def focus_text(self) -> None:
@@ -231,7 +235,9 @@ class QueueFilterBar(Widget):
         reviewer = "" if reviewer_val is Select.BLANK else str(reviewer_val)
 
         self.post_message(
-            self.Changed(text=text, student=student, task=task, status=status, reviewer=reviewer)
+            self.Changed(
+                text=text, student=student, task=task, status=status, reviewer=reviewer
+            )
         )
 
     def reset(self) -> None:
@@ -257,10 +263,18 @@ class QueueFilterBar(Widget):
     def restore_state(self, state: dict[str, Any]) -> None:
         """Restore filter values from a previously saved dict, then emit Changed."""
         self.query_one("#queue-filter-text", Input).value = state.get("text", "")
-        self.query_one("#queue-filter-student", Select).value = state.get("student", Select.BLANK)
-        self.query_one("#queue-filter-task", Select).value = state.get("task", Select.BLANK)
-        self.query_one("#queue-filter-status", Select).value = state.get("status", Select.BLANK)
-        self.query_one("#queue-filter-reviewer", Select).value = state.get("reviewer", Select.BLANK)
+        self.query_one("#queue-filter-student", Select).value = state.get(
+            "student", Select.BLANK
+        )
+        self.query_one("#queue-filter-task", Select).value = state.get(
+            "task", Select.BLANK
+        )
+        self.query_one("#queue-filter-status", Select).value = state.get(
+            "status", Select.BLANK
+        )
+        self.query_one("#queue-filter-reviewer", Select).value = state.get(
+            "reviewer", Select.BLANK
+        )
         self._emit_changed()
 
     def focus_text(self) -> None:
@@ -317,9 +331,15 @@ class QueueFilterBar(Widget):
         if reviewers is not None:
             self._reviewers = reviewers
 
-        self.query_one("#queue-filter-student", Select).set_options([(s, s) for s in students])
-        self.query_one("#queue-filter-task", Select).set_options([(t, t) for t in tasks])
-        self.query_one("#queue-filter-status", Select).set_options([(s, s) for s in statuses])
+        self.query_one("#queue-filter-student", Select).set_options(
+            [(s, s) for s in students]
+        )
+        self.query_one("#queue-filter-task", Select).set_options(
+            [(t, t) for t in tasks]
+        )
+        self.query_one("#queue-filter-status", Select).set_options(
+            [(s, s) for s in statuses]
+        )
         if reviewers is not None:
             self.query_one("#queue-filter-reviewer", Select).set_options(
                 [(r, r) for r in reviewers]
