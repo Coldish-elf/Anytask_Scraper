@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -15,9 +16,7 @@ def save_course_json(course: Course, output_dir: Path | str = ".") -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"course_{course.course_id}.json"
-    path.write_text(
-        json.dumps(asdict(course), indent=2, default=str, ensure_ascii=False)
-    )
+    path.write_text(json.dumps(asdict(course), indent=2, default=str, ensure_ascii=False))
     return path
 
 
@@ -47,7 +46,7 @@ def save_course_markdown(course: Course, output_dir: Path | str = ".") -> Path:
 
 def _md_deadline(task: Task) -> str:
     if task.deadline is None:
-        return "—"
+        return "-"
     return task.deadline.strftime("%H:%M %d-%m-%Y")
 
 
@@ -55,10 +54,8 @@ def _md_student_tasks(tasks: list[Task], lines: list[str]) -> None:
     lines.append("| # | Title | Score | Status | Deadline |")
     lines.append("|---|-------|------:|--------|----------|")
     for i, task in enumerate(tasks, 1):
-        score = str(task.score) if task.score is not None else "—"
-        lines.append(
-            f"| {i} | {task.title} | {score} | {task.status} | {_md_deadline(task)} |"
-        )
+        score = str(task.score) if task.score is not None else "-"
+        lines.append(f"| {i} | {task.title} | {score} | {task.status} | {_md_deadline(task)} |")
 
     lines.append("")
     for task in tasks:
@@ -80,7 +77,7 @@ def _md_teacher_tasks(tasks: list[Task], lines: list[str]) -> None:
         lines.append("| # | Title | Max Score | Deadline |")
         lines.append("|---|-------|----------:|----------|")
         for i, task in enumerate(section_tasks, 1):
-            max_score = str(task.max_score) if task.max_score is not None else "—"
+            max_score = str(task.max_score) if task.max_score is not None else "-"
             lines.append(f"| {i} | {task.title} | {max_score} | {_md_deadline(task)} |")
         lines.append("")
 
@@ -90,9 +87,7 @@ def save_queue_json(queue: ReviewQueue, output_dir: Path | str = ".") -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"queue_{queue.course_id}.json"
-    path.write_text(
-        json.dumps(asdict(queue), indent=2, default=str, ensure_ascii=False)
-    )
+    path.write_text(json.dumps(asdict(queue), indent=2, default=str, ensure_ascii=False))
     return path
 
 
@@ -103,7 +98,7 @@ def save_queue_markdown(queue: ReviewQueue, output_dir: Path | str = ".") -> Pat
     path = output_dir / f"queue_{queue.course_id}.md"
 
     lines: list[str] = []
-    lines.append(f"# Review Queue — Course {queue.course_id}")
+    lines.append(f"# Review Queue - Course {queue.course_id}")
     lines.append("")
 
     if queue.entries:
@@ -122,13 +117,13 @@ def save_queue_markdown(queue: ReviewQueue, output_dir: Path | str = ".") -> Pat
         for _url, sub in queue.submissions.items():
             lines.append(f"### Issue {sub.issue_id}: {sub.task_title}")
             lines.append(f"**Student:** {sub.student_name}  ")
-            lines.append(f"**Reviewer:** {sub.reviewer_name or '—'}  ")
+            lines.append(f"**Reviewer:** {sub.reviewer_name or '-'}  ")
             lines.append(f"**Status:** {sub.status}  ")
             lines.append(f"**Grade:** {sub.grade}/{sub.max_score}  ")
             lines.append(f"**Deadline:** {sub.deadline}")
             lines.append("")
             for j, c in enumerate(sub.comments, 1):
-                ts = str(c.timestamp) if c.timestamp else "—"
+                ts = str(c.timestamp) if c.timestamp else "-"
                 after = " [AFTER DEADLINE]" if c.is_after_deadline else ""
                 lines.append(f"**{j}. {c.author_name}** ({ts}){after}")
                 if c.content_html:
@@ -142,6 +137,99 @@ def save_queue_markdown(queue: ReviewQueue, output_dir: Path | str = ".") -> Pat
                 lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def save_course_csv(course: Course, output_dir: Path | str = ".") -> Path:
+    """Save course tasks to CSV."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"course_{course.course_id}.csv"
+
+    has_sections = any(t.section for t in course.tasks)
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if has_sections:
+            writer.writerow(["#", "Title", "Section", "Max Score", "Deadline"])
+            for i, task in enumerate(course.tasks, 1):
+                max_score = str(task.max_score) if task.max_score is not None else ""
+                deadline = task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
+                writer.writerow([i, task.title, task.section, max_score, deadline])
+        else:
+            writer.writerow(["#", "Title", "Score", "Status", "Deadline"])
+            for i, task in enumerate(course.tasks, 1):
+                score = str(task.score) if task.score is not None else ""
+                deadline = task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
+                writer.writerow([i, task.title, score, task.status, deadline])
+    return path
+
+
+def save_queue_csv(queue: ReviewQueue, output_dir: Path | str = ".") -> Path:
+    """Save queue entries to CSV."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"queue_{queue.course_id}.csv"
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"])
+        for i, e in enumerate(queue.entries, 1):
+            writer.writerow(
+                [
+                    i,
+                    e.student_name,
+                    e.task_title,
+                    e.status_name,
+                    e.responsible_name,
+                    e.update_time,
+                    e.mark,
+                ]
+            )
+    return path
+
+
+def save_submissions_csv(
+    submissions: dict[str, Submission] | list[Submission],
+    course_id: int,
+    output_dir: Path | str = ".",
+) -> Path:
+    """Save submissions detail to CSV."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"submissions_{course_id}.csv"
+
+    subs = submissions.values() if isinstance(submissions, dict) else submissions
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "Issue ID",
+                "Task",
+                "Student",
+                "Reviewer",
+                "Status",
+                "Grade",
+                "Max Score",
+                "Deadline",
+                "Comments",
+            ]
+        )
+        for sub in subs:
+            writer.writerow(
+                [
+                    sub.issue_id,
+                    sub.task_title,
+                    sub.student_name,
+                    sub.reviewer_name,
+                    sub.status,
+                    sub.grade,
+                    sub.max_score,
+                    sub.deadline,
+                    len(sub.comments),
+                ]
+            )
     return path
 
 
@@ -168,19 +256,17 @@ def download_submission_files(
     for comment in submission.comments:
         for file_att in comment.files:
             dest = student_dir / file_att.filename
-            try:
-                client.download_file(file_att.download_url, str(dest))
+            result = client.download_file(file_att.download_url, str(dest))
+            if result.success:
                 downloaded[file_att.filename] = dest
-            except Exception:
-                pass
 
         for link in comment.links:
             if "colab.research.google.com" not in link:
                 continue
             nb_name = f"colab_{submission.issue_id}.ipynb"
             dest = student_dir / nb_name
-            ok = client.download_colab_notebook(link, str(dest))
-            if ok:
+            result = client.download_colab_notebook(link, str(dest))
+            if result.success:
                 downloaded[link] = dest
             else:
                 url_file = student_dir / f"colab_{submission.issue_id}.url.txt"

@@ -27,7 +27,7 @@ def _status_text(status: str) -> Text:
 
 def _deadline_text(deadline: datetime | None) -> Text:
     if deadline is None:
-        return Text("—", style="dim")
+        return Text("-", style="dim")
     now = datetime.now()
     label = deadline.strftime("%H:%M %d-%m-%Y")
     if deadline < now:
@@ -43,7 +43,7 @@ def _score_text(task: Task) -> str:
         parts.append(str(task.score))
     if task.max_score is not None:
         parts.append(f"/ {task.max_score}")
-    return " ".join(parts) if parts else "—"
+    return " ".join(parts) if parts else "-"
 
 
 def display_course(course: Course, console: Console | None = None) -> None:
@@ -51,7 +51,7 @@ def display_course(course: Course, console: Console | None = None) -> None:
     if console is None:
         console = Console()
 
-    teachers_line = ", ".join(course.teachers) if course.teachers else "—"
+    teachers_line = ", ".join(course.teachers) if course.teachers else "-"
     header = f"[bold]{course.title}[/bold]\nTeachers: {teachers_line}"
     console.print(Panel(header, title=f"Course {course.course_id}", border_style="blue"))
 
@@ -102,7 +102,7 @@ def _display_teacher_tasks(tasks: list[Task], console: Console) -> None:
         table.add_column("Deadline", width=18)
 
         for i, task in enumerate(section_tasks, 1):
-            max_score = str(task.max_score) if task.max_score is not None else "—"
+            max_score = str(task.max_score) if task.max_score is not None else "-"
             table.add_row(
                 str(i),
                 task.title,
@@ -140,7 +140,7 @@ def display_queue(queue: ReviewQueue, console: Console | None = None) -> None:
     console.print(
         Panel(
             f"[bold]{len(queue.entries)} entries[/bold]",
-            title=f"Review Queue — Course {queue.course_id}",
+            title=f"Review Queue - Course {queue.course_id}",
             border_style="blue",
         )
     )
@@ -182,14 +182,14 @@ def display_submission(submission: Submission, console: Console | None = None) -
     header_lines = [
         f"[bold]Issue {submission.issue_id}: {submission.task_title}[/bold]",
         f"Student: {submission.student_name}",
-        f"Reviewer: {submission.reviewer_name or '—'}",
+        f"Reviewer: {submission.reviewer_name or '-'}",
         f"Status: {submission.status}  |  Grade: {submission.grade}/{submission.max_score}",
         f"Deadline: {submission.deadline}",
     ]
     console.print(Panel("\n".join(header_lines), border_style="green"))
 
     for i, comment in enumerate(submission.comments, 1):
-        ts = str(comment.timestamp) if comment.timestamp else "—"
+        ts = str(comment.timestamp) if comment.timestamp else "-"
         after = " [bold red][AFTER DEADLINE][/bold red]" if comment.is_after_deadline else ""
         console.print(f"\n  [bold]{i}. {comment.author_name}[/bold] [dim]{ts}[/dim]{after}")
         if comment.content_html:

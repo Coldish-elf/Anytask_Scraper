@@ -21,10 +21,13 @@ from anytask_scraper.parser import (
 )
 from anytask_scraper.storage import (
     download_submission_files,
+    save_course_csv,
     save_course_json,
     save_course_markdown,
+    save_queue_csv,
     save_queue_json,
     save_queue_markdown,
+    save_submissions_csv,
 )
 
 console = Console()
@@ -103,7 +106,7 @@ def _build_parser() -> argparse.ArgumentParser:
     course_p.add_argument(
         "--format",
         "-f",
-        choices=["json", "markdown", "table"],
+        choices=["json", "markdown", "csv", "table"],
         default="json",
         help="Output format (default: json). 'table' displays only, no file saved.",
     )
@@ -128,7 +131,7 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_p.add_argument(
         "--format",
         "-f",
-        choices=["json", "markdown", "table"],
+        choices=["json", "markdown", "csv", "table"],
         default="json",
         help="Output format (default: json). 'table' displays only, no file saved.",
     )
@@ -404,6 +407,13 @@ def _run_course(args: argparse.Namespace, client: AnytaskClient) -> None:
                 f"Course {course_id} ([bold]{course.title}[/bold]): "
                 f"{len(course.tasks)} tasks -> {path}",
             )
+        elif args.format == "csv":
+            path = save_course_csv(course, output_dir)
+            _print_ok(
+                args,
+                f"Course {course_id} ([bold]{course.title}[/bold]): "
+                f"{len(course.tasks)} tasks -> {path}",
+            )
 
         if args.show and args.format != "table":
             display_course(course, console)
@@ -499,6 +509,12 @@ def _run_queue(args: argparse.Namespace, client: AnytaskClient) -> None:
     elif args.format == "markdown":
         path = save_queue_markdown(queue, output_dir)
         _print_ok(args, f"Saved -> {path}")
+    elif args.format == "csv":
+        path = save_queue_csv(queue, output_dir)
+        _print_ok(args, f"Saved -> {path}")
+        if queue.submissions:
+            sub_path = save_submissions_csv(queue.submissions, course_id, output_dir)
+            _print_ok(args, f"Saved submissions -> {sub_path}")
 
     if args.show and args.format != "table":
         display_queue(queue, console)

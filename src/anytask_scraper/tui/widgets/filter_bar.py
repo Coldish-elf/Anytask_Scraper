@@ -159,6 +159,7 @@ class QueueFilterBar(Widget):
         student: str
         task: str
         status: str
+        reviewer: str
 
     @dataclass
     class Reset(Message):
@@ -169,12 +170,14 @@ class QueueFilterBar(Widget):
         students: list[str] | None = None,
         tasks: list[str] | None = None,
         statuses: list[str] | None = None,
+        reviewers: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._students = students or []
         self._tasks = tasks or []
         self._statuses = statuses or []
+        self._reviewers = reviewers or []
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="Search queue...", id="queue-filter-text")
@@ -199,6 +202,13 @@ class QueueFilterBar(Widget):
             prompt="Status",
             id="queue-filter-status",
         )
+        yield Select[str](
+            [(r, r) for r in self._reviewers],
+            allow_blank=True,
+            value=Select.BLANK,
+            prompt="Reviewer",
+            id="queue-filter-reviewer",
+        )
 
     def on_input_changed(self, event: Input.Changed) -> None:
         event.stop()
@@ -213,12 +223,16 @@ class QueueFilterBar(Widget):
         student_val = self.query_one("#queue-filter-student", Select).value
         task_val = self.query_one("#queue-filter-task", Select).value
         status_val = self.query_one("#queue-filter-status", Select).value
+        reviewer_val = self.query_one("#queue-filter-reviewer", Select).value
 
         student = "" if student_val is Select.BLANK else str(student_val)
         task = "" if task_val is Select.BLANK else str(task_val)
         status = "" if status_val is Select.BLANK else str(status_val)
+        reviewer = "" if reviewer_val is Select.BLANK else str(reviewer_val)
 
-        self.post_message(self.Changed(text=text, student=student, task=task, status=status))
+        self.post_message(
+            self.Changed(text=text, student=student, task=task, status=status, reviewer=reviewer)
+        )
 
     def reset(self) -> None:
         """Clear text input and reset all selects to blank, then emit Changed and Reset."""
@@ -226,6 +240,7 @@ class QueueFilterBar(Widget):
         self.query_one("#queue-filter-student", Select).value = Select.BLANK
         self.query_one("#queue-filter-task", Select).value = Select.BLANK
         self.query_one("#queue-filter-status", Select).value = Select.BLANK
+        self.query_one("#queue-filter-reviewer", Select).value = Select.BLANK
         self._emit_changed()
         self.post_message(self.Reset())
 
@@ -236,6 +251,7 @@ class QueueFilterBar(Widget):
             "student": self.query_one("#queue-filter-student", Select).value,
             "task": self.query_one("#queue-filter-task", Select).value,
             "status": self.query_one("#queue-filter-status", Select).value,
+            "reviewer": self.query_one("#queue-filter-reviewer", Select).value,
         }
 
     def restore_state(self, state: dict[str, Any]) -> None:
@@ -244,6 +260,7 @@ class QueueFilterBar(Widget):
         self.query_one("#queue-filter-student", Select).value = state.get("student", Select.BLANK)
         self.query_one("#queue-filter-task", Select).value = state.get("task", Select.BLANK)
         self.query_one("#queue-filter-status", Select).value = state.get("status", Select.BLANK)
+        self.query_one("#queue-filter-reviewer", Select).value = state.get("reviewer", Select.BLANK)
         self._emit_changed()
 
     def focus_text(self) -> None:
@@ -257,6 +274,7 @@ class QueueFilterBar(Widget):
             self.query_one("#queue-filter-student", Select),
             self.query_one("#queue-filter-task", Select),
             self.query_one("#queue-filter-status", Select),
+            self.query_one("#queue-filter-reviewer", Select),
         ]
         for i, widget in enumerate(focusable):
             if widget.has_focus:
@@ -274,6 +292,7 @@ class QueueFilterBar(Widget):
             self.query_one("#queue-filter-student", Select),
             self.query_one("#queue-filter-task", Select),
             self.query_one("#queue-filter-status", Select),
+            self.query_one("#queue-filter-reviewer", Select),
         ]
         for i, widget in enumerate(focusable):
             if widget.has_focus:
@@ -289,13 +308,20 @@ class QueueFilterBar(Widget):
         students: list[str],
         tasks: list[str],
         statuses: list[str],
+        reviewers: list[str] | None = None,
     ) -> None:
         """Repopulate select options when queue data changes."""
         self._students = students
         self._tasks = tasks
         self._statuses = statuses
+        if reviewers is not None:
+            self._reviewers = reviewers
 
         self.query_one("#queue-filter-student", Select).set_options([(s, s) for s in students])
         self.query_one("#queue-filter-task", Select).set_options([(t, t) for t in tasks])
         self.query_one("#queue-filter-status", Select).set_options([(s, s) for s in statuses])
+        if reviewers is not None:
+            self.query_one("#queue-filter-reviewer", Select).set_options(
+                [(r, r) for r in reviewers]
+            )
         self.query_one("#queue-filter-text", Input).value = ""

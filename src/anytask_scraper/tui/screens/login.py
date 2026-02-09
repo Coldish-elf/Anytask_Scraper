@@ -17,7 +17,7 @@ SESSION_FILE = ".anytask_session.json"
 
 
 class LoginScreen(Screen[None]):
-    """Minimal login screen — credentials or saved session."""
+    """Minimal login screen - credentials or saved session."""
 
     def compose(self) -> ComposeResult:
         with Center(), Vertical(id="login-box"):
@@ -66,10 +66,7 @@ class LoginScreen(Screen[None]):
 
         event.prevent_default()
         idx = focusable.index(current_id)
-        if event.key == "down":
-            next_idx = (idx + 1) % len(focusable)
-        else:
-            next_idx = (idx - 1) % len(focusable)
+        next_idx = (idx + 1) % len(focusable) if event.key == "down" else (idx - 1) % len(focusable)
         self.query_one(focusable[next_idx]).focus()
 
     @on(Input.Submitted, "#username")

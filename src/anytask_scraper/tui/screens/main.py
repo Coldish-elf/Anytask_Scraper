@@ -1,4 +1,4 @@
-"""Unified main screen for anytask-scraper TUI — tabbed layout."""
+"""Unified main screen for anytask-scraper TUI - tabbed layout."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from textual.widgets import (
     OptionList,
     RadioButton,
     RadioSet,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -42,7 +43,15 @@ from anytask_scraper.parser import (
     parse_submission_page,
     strip_html,
 )
-from anytask_scraper.storage import save_course_json, save_course_markdown
+from anytask_scraper.storage import (
+    save_course_csv,
+    save_course_json,
+    save_course_markdown,
+    save_queue_csv,
+    save_queue_json,
+    save_queue_markdown,
+    save_submissions_csv,
+)
 from anytask_scraper.tui.widgets.filter_bar import QueueFilterBar, TaskFilterBar
 
 _STATUS_STYLES: dict[str, str] = {
@@ -126,6 +135,8 @@ class MainScreen(Screen[None]):
         # Filter undo stacks
         self._task_filter_undo: dict[str, Any] | None = None
         self._queue_filter_undo: dict[str, Any] | None = None
+        self._queue_sort_column: int | None = None
+        self._queue_sort_reverse = False
         # Help panel visible
         self._help_visible = False
 
@@ -181,10 +192,42 @@ class MainScreen(Screen[None]):
 
                 with TabPane("Export", id="export-tab"), Vertical(id="export-area"):
                     with Container(classes="option-group"):
+                        yield Label("Export Type:", classes="option-label")
+                        with RadioSet(id="export-type-set"):
+                            yield RadioButton(
+                                "Tasks", id="tasks-export-radio", value=True
+                            )
+                            yield RadioButton("Queue", id="queue-export-radio")
+                            yield RadioButton("Submissions", id="subs-export-radio")
+                    with Container(classes="option-group"):
                         yield Label("Format:", classes="option-label")
                         with RadioSet(id="format-set"):
                             yield RadioButton("JSON", id="json-radio", value=True)
                             yield RadioButton("Markdown", id="md-radio")
+                            yield RadioButton("CSV", id="csv-radio")
+                    with Container(classes="option-group", id="export-filter-group"):
+                        yield Label("Filter (optional):", classes="option-label")
+                        yield Select[str](
+                            [],
+                            allow_blank=True,
+                            value=Select.BLANK,
+                            prompt="Task",
+                            id="export-filter-task",
+                        )
+                        yield Select[str](
+                            [],
+                            allow_blank=True,
+                            value=Select.BLANK,
+                            prompt="Status",
+                            id="export-filter-status",
+                        )
+                        yield Select[str](
+                            [],
+                            allow_blank=True,
+                            value=Select.BLANK,
+                            prompt="Reviewer",
+                            id="export-filter-reviewer",
+                        )
                     with Container(classes="option-group"):
                         yield Label("Output Directory:", classes="option-label")
                         yield Input(value="./output", id="output-dir-input")
@@ -206,7 +249,9 @@ class MainScreen(Screen[None]):
         qtable = self.query_one("#queue-table", DataTable)
         qtable.cursor_type = "row"
         qtable.zebra_stripes = True
-        qtable.add_columns("#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade")
+        qtable.add_columns(
+            "#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"
+        )
 
         self.query_one("#course-list", OptionList).focus()
 
@@ -215,9 +260,11 @@ class MainScreen(Screen[None]):
             if cid not in self.app.courses:  # type: ignore[attr-defined]
                 self._fetch_course(cid)
 
-    # ── Inline status line ────────────────────────────────────────────
+    #  Inline status line
 
-    def _show_status(self, message: str, kind: str = "info", timeout: float = 4) -> None:
+    def _show_status(
+        self, message: str, kind: str = "info", timeout: float = 4
+    ) -> None:
         """Show an inline message in the status line."""
         line = self.query_one("#status-line", Static)
         style_map = {
@@ -235,7 +282,7 @@ class MainScreen(Screen[None]):
     def _clear_status(self) -> None:
         self.query_one("#status-line", Static).update("")
 
-    # ── Help panel ────────────────────────────────────────────────────
+    #  Help panel
 
     def action_toggle_help(self) -> None:
         panel = self.query_one("#help-panel", Static)
@@ -269,7 +316,7 @@ class MainScreen(Screen[None]):
             panel.update("")
             panel.remove_class("visible")
 
-    # ── Tab switching ─────────────────────────────────────────────────
+    #  Tab switching
 
     def action_tab_tasks(self) -> None:
         self.query_one("#main-tabs", TabbedContent).active = "tasks-tab"
@@ -281,14 +328,14 @@ class MainScreen(Screen[None]):
 
     def action_tab_export(self) -> None:
         self.query_one("#main-tabs", TabbedContent).active = "export-tab"
-        self.query_one("#output-dir-input", Input).focus()
+        self.query_one("#format-set", RadioSet).focus()
 
     @on(TabbedContent.TabActivated, "#main-tabs")
     def _tab_activated(self, event: TabbedContent.TabActivated) -> None:
         if event.pane.id == "queue-tab":
             self._maybe_load_queue()
 
-    # ── Focus cycling ─────────────────────────────────────────────────
+    #  Focus cycling
 
     def _get_focus_order(self) -> list[str]:
         """Return IDs of focusable zones for current tab."""
@@ -300,7 +347,7 @@ class MainScreen(Screen[None]):
         elif active == "queue-tab":
             zones += ["#queue-filter-bar", "#queue-table"]
         elif active == "export-tab":
-            zones += ["#output-dir-input"]
+            zones += ["#format-set", "#output-dir-input"]
         return zones
 
     def action_cycle_focus(self) -> None:
@@ -388,6 +435,9 @@ class MainScreen(Screen[None]):
         elif zone_id == "#queue-table":
             self.query_one("#queue-table", DataTable).focus()
             self._focus_left_pane = False
+        elif zone_id == "#format-set":
+            self.query_one("#format-set", RadioSet).focus()
+            self._focus_left_pane = False
         elif zone_id == "#output-dir-input":
             self.query_one("#output-dir-input", Input).focus()
             self._focus_left_pane = False
@@ -434,7 +484,7 @@ class MainScreen(Screen[None]):
         elif active == "queue-tab":
             self.query_one("#queue-filter-bar", QueueFilterBar).focus_prev_filter()
 
-    # ── Key mappings (j/k) ────────────────────────────────────────────
+    #  Key mappings (j/k)
 
     def on_key(self, event: object) -> None:
         from textual.events import Key
@@ -454,7 +504,7 @@ class MainScreen(Screen[None]):
                 event.prevent_default()
                 focused.action_cursor_up()
 
-    # ── Filter reset / undo ───────────────────────────────────────────
+    #  Filter reset / undo
 
     def action_reset_filters(self) -> None:
         tabs = self.query_one("#main-tabs", TabbedContent)
@@ -486,7 +536,7 @@ class MainScreen(Screen[None]):
         else:
             self._show_status("Nothing to undo", kind="warning", timeout=2)
 
-    # ── Add course ────────────────────────────────────────────────────
+    #  Add course
 
     def action_add_course(self) -> None:
         bar = self.query_one("#course-add-bar")
@@ -517,7 +567,7 @@ class MainScreen(Screen[None]):
         self._show_status(f"Loading course {course_id}...")
         self._fetch_course(course_id)
 
-    # ── Remove course ─────────────────────────────────────────────────
+    #  Remove course
 
     def action_remove_course(self) -> None:
         if self._selected_course_id is None:
@@ -542,10 +592,12 @@ class MainScreen(Screen[None]):
         self._rebuild_queue_table()
         self._clear_queue_detail()
         self._queue_loaded_for = None
-        self.query_one("#queue-info-label", Label).update("Select a teacher course to view queue")
+        self.query_one("#queue-info-label", Label).update(
+            "Select a teacher course to view queue"
+        )
         self._show_status(f"Removed course {cid}", kind="success")
 
-    # ── Dismiss overlays on Escape ────────────────────────────────────
+    #  Dismiss overlays on Escape
 
     def action_dismiss_overlay(self) -> None:
         add_bar = self.query_one("#course-add-bar")
@@ -559,7 +611,7 @@ class MainScreen(Screen[None]):
             help_panel.update("")
             help_panel.remove_class("visible")
 
-    # ── Course selection ──────────────────────────────────────────────
+    #  Course selection
 
     @on(OptionList.OptionSelected, "#course-list")
     def _course_selected(self, event: OptionList.OptionSelected) -> None:
@@ -589,17 +641,21 @@ class MainScreen(Screen[None]):
         self._clear_queue_detail()
 
         if self.is_teacher_view:
-            self.query_one("#queue-info-label", Label).update("Switch to Queue tab to load")
+            self.query_one("#queue-info-label", Label).update(
+                "Switch to Queue tab to load"
+            )
         else:
             self.query_one("#queue-info-label", Label).update(
                 "Queue available for teacher courses only"
             )
 
+        self._update_export_filters()
+
         tabs = self.query_one("#main-tabs", TabbedContent)
         if tabs.active == "queue-tab":
             self._maybe_load_queue()
 
-    # ── Task filter handling ──────────────────────────────────────────
+    #  Task filter handling
 
     @on(TaskFilterBar.Changed)
     def _handle_task_filter(self, event: TaskFilterBar.Changed) -> None:
@@ -616,9 +672,11 @@ class MainScreen(Screen[None]):
     def _update_task_filter_options(self) -> None:
         statuses = sorted({t.status for t in self.all_tasks if t.status})
         sections = sorted({t.section for t in self.all_tasks if t.section})
-        self.query_one("#task-filter-bar", TaskFilterBar).update_options(statuses, sections)
+        self.query_one("#task-filter-bar", TaskFilterBar).update_options(
+            statuses, sections
+        )
 
-    # ── Task selection ────────────────────────────────────────────────
+    #  Task selection
 
     @on(DataTable.RowHighlighted, "#task-table")
     def _task_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -642,7 +700,7 @@ class MainScreen(Screen[None]):
         if 0 <= idx < len(self.filtered_tasks):
             self._show_detail(self.filtered_tasks[idx])
 
-    # ── Queue filter handling ─────────────────────────────────────────
+    #  Queue filter handling
 
     @on(QueueFilterBar.Changed)
     def _handle_queue_filter(self, event: QueueFilterBar.Changed) -> None:
@@ -650,22 +708,34 @@ class MainScreen(Screen[None]):
         self.filtered_queue_entries = [
             e
             for e in self.all_queue_entries
-            if (not needle or needle in e.student_name.lower() or needle in e.task_title.lower())
+            if (
+                not needle
+                or needle in e.student_name.lower()
+                or needle in e.task_title.lower()
+            )
             and (not event.student or e.student_name == event.student)
             and (not event.task or e.task_title == event.task)
             and (not event.status or e.status_name == event.status)
+            and (not event.reviewer or e.responsible_name == event.reviewer)
         ]
         self._rebuild_queue_table()
 
     def _update_queue_filter_options(self) -> None:
-        students = sorted({e.student_name for e in self.all_queue_entries if e.student_name})
+        students = sorted(
+            {e.student_name for e in self.all_queue_entries if e.student_name}
+        )
         tasks = sorted({e.task_title for e in self.all_queue_entries if e.task_title})
-        statuses = sorted({e.status_name for e in self.all_queue_entries if e.status_name})
+        statuses = sorted(
+            {e.status_name for e in self.all_queue_entries if e.status_name}
+        )
+        reviewers = sorted(
+            {e.responsible_name for e in self.all_queue_entries if e.responsible_name}
+        )
         self.query_one("#queue-filter-bar", QueueFilterBar).update_options(
-            students, tasks, statuses
+            students, tasks, statuses, reviewers
         )
 
-    # ── Queue row highlight → auto-load preview ───────────────────────
+    #  Queue row highlight → auto-load preview
 
     @on(DataTable.RowHighlighted, "#queue-table")
     def _queue_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -797,8 +867,14 @@ class MainScreen(Screen[None]):
                 )
             )
             for comment in sub.comments:
-                ts = comment.timestamp.strftime("%d.%m.%Y %H:%M") if comment.timestamp else "-"
-                after = " [bold red](LATE)[/bold red]" if comment.is_after_deadline else ""
+                ts = (
+                    comment.timestamp.strftime("%d.%m.%Y %H:%M")
+                    if comment.timestamp
+                    else "-"
+                )
+                after = (
+                    " [bold red](LATE)[/bold red]" if comment.is_after_deadline else ""
+                )
                 scroll.mount(
                     Label(
                         f"[bold]{comment.author_name}[/bold] [dim]{ts}[/dim]{after}",
@@ -830,7 +906,88 @@ class MainScreen(Screen[None]):
         scroll.remove_children()
         scroll.mount(Label("[dim]Select a queue entry[/dim]"))
 
-    # ── Export ────────────────────────────────────────────────────────
+    #  Queue column sorting
+
+    @on(DataTable.HeaderSelected, "#queue-table")
+    def _queue_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        col_idx = event.column_index
+        if self._queue_sort_column == col_idx:
+            self._queue_sort_reverse = not self._queue_sort_reverse
+        else:
+            self._queue_sort_column = col_idx
+            self._queue_sort_reverse = False
+        self._sort_and_rebuild_queue()
+
+    def _sort_and_rebuild_queue(self) -> None:
+        col = self._queue_sort_column
+        if col is None:
+            return
+        key_map: dict[int, Any] = {
+            0: lambda e: 0,
+            1: lambda e: e.student_name.lower(),
+            2: lambda e: e.task_title.lower(),
+            3: lambda e: e.status_name.lower(),
+            4: lambda e: e.responsible_name.lower(),
+            5: lambda e: e.update_time,
+            6: lambda e: e.mark,
+        }
+        key_fn = key_map.get(col)
+        if key_fn:
+            self.filtered_queue_entries.sort(
+                key=key_fn, reverse=self._queue_sort_reverse
+            )
+            self._rebuild_queue_table()
+
+    #  Export
+
+    @on(RadioSet.Changed, "#export-type-set")
+    def _export_type_changed(self, event: RadioSet.Changed) -> None:
+        self._update_export_filters()
+
+    def _update_export_filters(self) -> None:
+        try:
+            radioset = self.query_one("#export-type-set", RadioSet)
+        except Exception:
+            return
+        btn = radioset.pressed_button
+        if not btn:
+            return
+
+        export_type = btn.id or ""
+        task_select = self.query_one("#export-filter-task", Select)
+        status_select = self.query_one("#export-filter-status", Select)
+        reviewer_select = self.query_one("#export-filter-reviewer", Select)
+
+        task_select.set_options([])
+        status_select.set_options([])
+        reviewer_select.set_options([])
+
+        if export_type == "tasks-export-radio":
+            statuses = sorted({t.status for t in self.all_tasks if t.status})
+            status_select.set_options([(s, s) for s in statuses])
+            reviewer_select.disabled = True
+            task_select.disabled = True
+            status_select.disabled = False
+        elif export_type in ("queue-export-radio", "subs-export-radio"):
+            tasks = sorted(
+                {e.task_title for e in self.all_queue_entries if e.task_title}
+            )
+            statuses = sorted(
+                {e.status_name for e in self.all_queue_entries if e.status_name}
+            )
+            reviewers = sorted(
+                {
+                    e.responsible_name
+                    for e in self.all_queue_entries
+                    if e.responsible_name
+                }
+            )
+            task_select.set_options([(t, t) for t in tasks])
+            status_select.set_options([(s, s) for s in statuses])
+            reviewer_select.set_options([(r, r) for r in reviewers])
+            task_select.disabled = False
+            status_select.disabled = False
+            reviewer_select.disabled = False
 
     @on(Button.Pressed, "#export-btn")
     def _handle_export(self) -> None:
@@ -838,18 +995,35 @@ class MainScreen(Screen[None]):
             self._set_export_status("Select a course first", "error")
             return
 
-        radioset = self.query_one("#format-set", RadioSet)
-        btn = radioset.pressed_button
-        if not btn:
+        format_set = self.query_one("#format-set", RadioSet)
+        fmt_btn = format_set.pressed_button
+        if not fmt_btn:
             self._set_export_status("Select a format", "error")
             return
 
-        fmt = "json" if btn.id == "json-radio" else "markdown"
-        output_dir = self.query_one("#output-dir-input", Input).value.strip() or "./output"
+        fmt_map = {"json-radio": "json", "md-radio": "markdown", "csv-radio": "csv"}
+        fmt = fmt_map.get(fmt_btn.id or "", "json")
+
+        type_set = self.query_one("#export-type-set", RadioSet)
+        type_btn = type_set.pressed_button
+        export_type = type_btn.id if type_btn else "tasks-export-radio"
+
+        task_val = self.query_one("#export-filter-task", Select).value
+        status_val = self.query_one("#export-filter-status", Select).value
+        reviewer_val = self.query_one("#export-filter-reviewer", Select).value
+        filters = {
+            "task": "" if task_val is Select.BLANK else str(task_val),
+            "status": "" if status_val is Select.BLANK else str(status_val),
+            "reviewer": "" if reviewer_val is Select.BLANK else str(reviewer_val),
+        }
+
+        output_dir = (
+            self.query_one("#output-dir-input", Input).value.strip() or "./output"
+        )
         output_path = Path(output_dir).expanduser().resolve()
 
         self._set_export_status(f"Exporting to {output_path}...", "info")
-        self._do_export(fmt, output_path)
+        self._do_export(fmt, output_path, export_type or "tasks-export-radio", filters)
 
     def _set_export_status(self, message: str, kind: str = "info") -> None:
         label = self.query_one("#export-status-label", Label)
@@ -858,27 +1032,112 @@ class MainScreen(Screen[None]):
         label.add_class(kind)
 
     @work(thread=True)
-    def _do_export(self, fmt: str, output_path: Path) -> None:
+    def _do_export(
+        self,
+        fmt: str,
+        output_path: Path,
+        export_type: str = "tasks-export-radio",
+        filters: dict[str, str] | None = None,
+    ) -> None:
         try:
-            course = self.app.current_course  # type: ignore[attr-defined]
-            if not course:
+            output_path.mkdir(parents=True, exist_ok=True)
+            filters = filters or {}
+            course_id = self._selected_course_id or 0
+
+            if export_type == "tasks-export-radio":
+                course = self.app.current_course  # type: ignore[attr-defined]
+                if not course:
+                    self.app.call_from_thread(
+                        self._set_export_status, "No course selected", "error"
+                    )
+                    return
+
+                tasks = list(course.tasks)
+                if filters.get("status"):
+                    tasks = [t for t in tasks if t.status == filters["status"]]
+
+                filtered_course = Course(
+                    course_id=course.course_id,
+                    title=course.title,
+                    teachers=list(course.teachers),
+                    tasks=tasks,
+                )
+
+                if fmt == "json":
+                    saved = save_course_json(filtered_course, output_path)
+                elif fmt == "csv":
+                    saved = save_course_csv(filtered_course, output_path)
+                else:
+                    saved = save_course_markdown(filtered_course, output_path)
+
+            elif export_type == "queue-export-radio":
+                entries = list(self.all_queue_entries)
+                if filters.get("task"):
+                    entries = [e for e in entries if e.task_title == filters["task"]]
+                if filters.get("status"):
+                    entries = [e for e in entries if e.status_name == filters["status"]]
+                if filters.get("reviewer"):
+                    entries = [
+                        e for e in entries if e.responsible_name == filters["reviewer"]
+                    ]
+
+                queue = ReviewQueue(course_id=course_id, entries=entries)
+
+                if fmt == "json":
+                    saved = save_queue_json(queue, output_path)
+                elif fmt == "csv":
+                    saved = save_queue_csv(queue, output_path)
+                else:
+                    saved = save_queue_markdown(queue, output_path)
+
+            elif export_type == "subs-export-radio":
+                cache = self.app.queue_cache.get(course_id)  # type: ignore[attr-defined]
+                if not cache or not cache.submissions:
+                    self.app.call_from_thread(
+                        self._set_export_status,
+                        "No submissions loaded. Open queue entries first.",
+                        "error",
+                    )
+                    return
+
+                subs = list(cache.submissions.values())
+                if filters.get("task"):
+                    subs = [s for s in subs if s.task_title == filters["task"]]
+                if filters.get("status"):
+                    subs = [s for s in subs if s.status == filters["status"]]
+                if filters.get("reviewer"):
+                    subs = [s for s in subs if s.reviewer_name == filters["reviewer"]]
+
+                if fmt == "csv":
+                    saved = save_submissions_csv(subs, course_id, output_path)
+                elif fmt == "json":
+                    import json as json_mod
+                    from dataclasses import asdict
+
+                    saved = output_path / f"submissions_{course_id}.json"
+                    saved.write_text(
+                        json_mod.dumps(
+                            [asdict(s) for s in subs],
+                            indent=2,
+                            default=str,
+                            ensure_ascii=False,
+                        )
+                    )
+                else:
+                    queue = ReviewQueue(
+                        course_id=course_id,
+                        submissions={s.student_url or str(s.issue_id): s for s in subs},
+                    )
+                    saved = save_queue_markdown(queue, output_path)
+            else:
                 self.app.call_from_thread(
-                    self._set_export_status,
-                    "No course selected",
-                    "error",
+                    self._set_export_status, "Unknown export type", "error"
                 )
                 return
 
-            output_path.mkdir(parents=True, exist_ok=True)
-
-            if fmt == "json":
-                saved = save_course_json(course, output_path)
-            else:
-                saved = save_course_markdown(course, output_path)
-
             self.app.call_from_thread(
                 self._set_export_status,
-                f"Saved: {saved.name}",
+                f"Saved: {saved.name if hasattr(saved, 'name') else saved}",
                 "success",
             )
         except Exception as e:
@@ -888,7 +1147,7 @@ class MainScreen(Screen[None]):
                 "error",
             )
 
-    # ── Data fetching ─────────────────────────────────────────────────
+    #  Data fetching
 
     @work(thread=True)
     def _fetch_course(self, course_id: int) -> None:
@@ -940,9 +1199,10 @@ class MainScreen(Screen[None]):
         title = course.title or f"Course {course.course_id}"
         option_list.add_option(Option(title, id=str(course.course_id)))
 
-    # ── Queue fetching ────────────────────────────────────────────────
+    #  Queue fetching
 
     def _maybe_load_queue(self) -> None:
+        self._enable_queue_tab()
         if self._selected_course_id is None:
             return
         if not self.is_teacher_view:
@@ -961,7 +1221,9 @@ class MainScreen(Screen[None]):
             self._queue_loaded_for = self._selected_course_id
             self._update_queue_filter_options()
             self._rebuild_queue_table()
-            self.query_one("#queue-info-label", Label).update(f"{len(queue.entries)} entries")
+            self.query_one("#queue-info-label", Label).update(
+                f"{len(queue.entries)} entries"
+            )
             return
 
         self.query_one("#queue-info-label", Label).update("Loading queue...")
@@ -1005,7 +1267,24 @@ class MainScreen(Screen[None]):
 
             self.app.call_from_thread(self._update_queue_filter_options)
             self.app.call_from_thread(self._rebuild_queue_table)
-            self.app.call_from_thread(self._update_queue_info, f"{len(entries)} entries")
+            self.app.call_from_thread(
+                self._update_queue_info, f"{len(entries)} entries"
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                self.app.call_from_thread(self._disable_queue_tab)
+                self.app.call_from_thread(
+                    self._update_queue_info, "No permission to view queue"
+                )
+            else:
+                self.app.call_from_thread(
+                    self._show_status,
+                    f"Queue error: HTTP {e.response.status_code}",
+                    kind="error",
+                )
+                self.app.call_from_thread(
+                    self._update_queue_info, f"Error: HTTP {e.response.status_code}"
+                )
         except Exception as e:
             self.app.call_from_thread(
                 self._show_status,
@@ -1016,6 +1295,15 @@ class MainScreen(Screen[None]):
 
     def _update_queue_info(self, text: str) -> None:
         self.query_one("#queue-info-label", Label).update(text)
+
+    def _disable_queue_tab(self) -> None:
+        self.query_one("#queue-filter-bar", QueueFilterBar).disabled = True
+        self.query_one("#queue-table", DataTable).disabled = True
+        self.query_one("#queue-info-label", Label).update("No permission to view queue")
+
+    def _enable_queue_tab(self) -> None:
+        self.query_one("#queue-filter-bar", QueueFilterBar).disabled = False
+        self.query_one("#queue-table", DataTable).disabled = False
 
     @work(thread=True)
     def _fetch_and_show_submission(self, entry: QueueEntry) -> None:
@@ -1067,7 +1355,7 @@ class MainScreen(Screen[None]):
 
         self.app.push_screen(SubmissionScreen(sub))
 
-    # ── Task table helpers ────────────────────────────────────────────
+    #  Task table helpers
 
     def _setup_task_table_columns(self) -> None:
         table = self.query_one("#task-table", DataTable)
@@ -1103,7 +1391,7 @@ class MainScreen(Screen[None]):
                     key=str(idx),
                 )
 
-    # ── Queue table helpers ───────────────────────────────────────────
+    #  Queue table helpers
 
     def _rebuild_queue_table(self) -> None:
         table = self.query_one("#queue-table", DataTable)
@@ -1122,7 +1410,7 @@ class MainScreen(Screen[None]):
                 key=entry.issue_url or str(idx),
             )
 
-    # ── Detail panel (tasks) ──────────────────────────────────────────
+    #  Detail panel (tasks)
 
     def _clear_detail(self) -> None:
         scroll = self.query_one("#detail-scroll", VerticalScroll)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,16 @@ BASE_URL = "https://anytask.org"
 LOGIN_URL = f"{BASE_URL}/accounts/login/"
 
 _CSRF_RE = re.compile(r"name=['\"]csrfmiddlewaretoken['\"] value=['\"]([^'\"]+)['\"]")
+_COLAB_FILE_ID_RE = re.compile(r"(?:/drive/|/notebook/d/)([a-zA-Z0-9_-]+)")
+
+
+@dataclass
+class DownloadResult:
+    """Result of a file download attempt."""
+
+    success: bool
+    path: str
+    reason: str = ""
 
 
 class LoginError(Exception):
@@ -39,8 +50,7 @@ class AnytaskClient:
         """Log in with Django form auth."""
         if not self._has_credentials():
             raise LoginError(
-                "No credentials available. "
-                "Provide username/password or credentials file"
+                "No credentials available. Provide username/password or credentials file"
             )
 
         resp = self._client.get(LOGIN_URL)
@@ -215,55 +225,145 @@ class AnytaskClient:
         resp = self._request("GET", url)
         return resp.text
 
-    def download_file(self, url: str, output_path: str) -> None:
-        """Download file to local path."""
+    def _download_to_file(self, url: str, dest: Path) -> httpx.Response:
+        """Stream download to file, handling login redirects."""
+        with self._client.stream("GET", url) as resp:
+            if self._is_login_response(resp):
+                self._authenticated = False
+                if not self._has_credentials():
+                    raise LoginError("Saved session expired and no credentials were provided")
+                self.login()
+                with self._client.stream("GET", url) as retried:
+                    retried.raise_for_status()
+                    with dest.open("wb") as f:
+                        for chunk in retried.iter_bytes():
+                            f.write(chunk)
+                    return retried
+            resp.raise_for_status()
+            with dest.open("wb") as f:
+                for chunk in resp.iter_bytes():
+                    f.write(chunk)
+            return resp
+
+    @staticmethod
+    def _validate_downloaded_file(path: Path, content_type: str, expected_suffix: str) -> str:
+        """Validate downloaded file. Returns empty string if OK, or reason if invalid."""
+        if not path.exists() or path.stat().st_size == 0:
+            return "empty_file"
+
+        with path.open("rb") as f:
+            head = f.read(1024)
+
+        head_lower = head.lower().strip()
+        is_html = (
+            head_lower.startswith(b"<!doctype html")
+            or head_lower.startswith(b"<html")
+            or b"<head>" in head_lower[:500]
+        )
+
+        if is_html:
+            if b"id_username" in head or b"/accounts/login/" in head:
+                return "login_redirect"
+            if b"Jupyter Server" in head or b"Jupyter Notebook" in head:
+                return "jupyter_server_html"
+            return "html_instead_of_file"
+
+        if expected_suffix.lower() == ".ipynb" and not head_lower.lstrip().startswith(b"{"):
+            return "invalid_notebook_format"
+
+        if (
+            content_type
+            and "text/html" in content_type.lower()
+            and expected_suffix.lower() not in {".html", ".htm"}
+        ):
+            return "content_type_html_mismatch"
+
+        return ""
+
+    def download_file(self, url: str, output_path: str) -> DownloadResult:
+        """Download file to local path with content validation."""
         if not self._authenticated and self._has_credentials():
             self.login()
 
         full_url = url if url.startswith("http") else f"{BASE_URL}{url}"
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output.with_suffix(output.suffix + ".tmp")
 
-        with self._client.stream("GET", full_url) as resp:
-            if self._is_login_response(resp):
-                self._authenticated = False
-                if not self._has_credentials():
-                    raise LoginError("Saved session expired and no credentials were provided")
-                self.login()
-                with self._client.stream("GET", full_url) as retried:
-                    retried.raise_for_status()
-                    with output.open("wb") as f:
-                        for chunk in retried.iter_bytes():
-                            f.write(chunk)
-                return
+        try:
+            resp = self._download_to_file(full_url, tmp_path)
+        except LoginError:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        except Exception as e:
+            tmp_path.unlink(missing_ok=True)
+            return DownloadResult(success=False, path=output_path, reason=f"download_error: {e}")
 
-            resp.raise_for_status()
-            with output.open("wb") as f:
-                for chunk in resp.iter_bytes():
-                    f.write(chunk)
+        content_type = resp.headers.get("content-type", "")
+        problem = self._validate_downloaded_file(tmp_path, content_type, output.suffix)
+        if problem:
+            tmp_path.unlink(missing_ok=True)
+            return DownloadResult(success=False, path=output_path, reason=problem)
 
-    def download_colab_notebook(self, colab_url: str, output_path: str) -> bool:
+        tmp_path.rename(output)
+        return DownloadResult(success=True, path=output_path, reason="ok")
+
+    def download_colab_notebook(self, colab_url: str, output_path: str) -> DownloadResult:
         """Try downloading a Colab notebook as .ipynb."""
-        m = re.search(r"drive/([a-zA-Z0-9_-]+)", colab_url)
+        m = _COLAB_FILE_ID_RE.search(colab_url) or re.search(r"drive/([a-zA-Z0-9_-]+)", colab_url)
         if m is None:
-            return False
+            return DownloadResult(success=False, path=output_path, reason="no_file_id_in_url")
 
         file_id = m.group(1)
-        export_url = f"https://docs.google.com/uc?export=download&id={file_id}"
-        try:
-            output = Path(output_path)
-            output.parent.mkdir(parents=True, exist_ok=True)
-            with httpx.Client(follow_redirects=True, timeout=30.0) as gc:
-                resp = gc.get(export_url)
-                if resp.status_code != 200:
-                    return False
-                content = resp.content
-                if not content.strip().startswith(b"{"):
-                    return False
-                output.write_bytes(content)
-                return True
-        except Exception:
-            return False
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        download_urls = [
+            f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t",
+            f"https://docs.google.com/uc?export=download&id={file_id}",
+            f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t",
+        ]
+
+        last_reason = "all_strategies_failed"
+        for download_url in download_urls:
+            try:
+                with httpx.Client(follow_redirects=True, timeout=30.0) as gc:
+                    resp = gc.get(download_url)
+                    if resp.status_code != 200:
+                        last_reason = f"http_{resp.status_code}"
+                        continue
+
+                    content = resp.content
+                    content_lower = content[:1024].lower().strip()
+                    if content_lower.startswith(b"<!doctype html") or content_lower.startswith(
+                        b"<html"
+                    ):
+                        confirm_match = re.search(rb"confirm=([a-zA-Z0-9_-]+)", content)
+                        if confirm_match:
+                            confirm_url = (
+                                f"https://drive.usercontent.google.com/download?id={file_id}"
+                                f"&export=download&confirm={confirm_match.group(1).decode()}"
+                            )
+                            resp2 = gc.get(confirm_url)
+                            if resp2.status_code == 200 and resp2.content.strip().startswith(b"{"):
+                                output.write_bytes(resp2.content)
+                                return DownloadResult(
+                                    success=True, path=output_path, reason="ok_after_confirm"
+                                )
+                        last_reason = "google_drive_html_page"
+                        continue
+
+                    if not content.strip().startswith(b"{"):
+                        last_reason = "not_json_content"
+                        continue
+
+                    output.write_bytes(content)
+                    return DownloadResult(success=True, path=output_path, reason="ok")
+            except Exception as e:
+                last_reason = f"error: {e}"
+                continue
+
+        return DownloadResult(success=False, path=output_path, reason=last_reason)
 
     def close(self) -> None:
         self._client.close()
