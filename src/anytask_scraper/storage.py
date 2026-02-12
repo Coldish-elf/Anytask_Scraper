@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from anytask_scraper.models import Course, ReviewQueue, Submission, Task
+from anytask_scraper.models import Course, Gradebook, ReviewQueue, Submission, Task
 from anytask_scraper.parser import format_student_folder, strip_html
 
 
@@ -16,9 +16,7 @@ def save_course_json(course: Course, output_dir: Path | str = ".") -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"course_{course.course_id}.json"
-    path.write_text(
-        json.dumps(asdict(course), indent=2, default=str, ensure_ascii=False)
-    )
+    path.write_text(json.dumps(asdict(course), indent=2, default=str, ensure_ascii=False))
     return path
 
 
@@ -57,9 +55,7 @@ def _md_student_tasks(tasks: list[Task], lines: list[str]) -> None:
     lines.append("|---|-------|------:|--------|----------|")
     for i, task in enumerate(tasks, 1):
         score = str(task.score) if task.score is not None else "-"
-        lines.append(
-            f"| {i} | {task.title} | {score} | {task.status} | {_md_deadline(task)} |"
-        )
+        lines.append(f"| {i} | {task.title} | {score} | {task.status} | {_md_deadline(task)} |")
 
     lines.append("")
     for task in tasks:
@@ -91,9 +87,7 @@ def save_queue_json(queue: ReviewQueue, output_dir: Path | str = ".") -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"queue_{queue.course_id}.json"
-    path.write_text(
-        json.dumps(asdict(queue), indent=2, default=str, ensure_ascii=False)
-    )
+    path.write_text(json.dumps(asdict(queue), indent=2, default=str, ensure_ascii=False))
     return path
 
 
@@ -146,7 +140,9 @@ def save_queue_markdown(queue: ReviewQueue, output_dir: Path | str = ".") -> Pat
     return path
 
 
-def save_course_csv(course: Course, output_dir: Path | str = ".") -> Path:
+def save_course_csv(
+    course: Course, output_dir: Path | str = ".", columns: list[str] | None = None
+) -> Path:
     """Save course tasks to CSV."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -157,47 +153,70 @@ def save_course_csv(course: Course, output_dir: Path | str = ".") -> Path:
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if has_sections:
-            writer.writerow(["#", "Title", "Section", "Max Score", "Deadline"])
+            all_columns = ["#", "Title", "Section", "Max Score", "Deadline"]
+            if columns is not None:
+                filtered_columns = [c for c in all_columns if c in columns]
+            else:
+                filtered_columns = all_columns
+
+            writer.writerow(filtered_columns)
             for i, task in enumerate(course.tasks, 1):
-                max_score = str(task.max_score) if task.max_score is not None else ""
-                deadline = (
-                    task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
-                )
-                writer.writerow([i, task.title, task.section, max_score, deadline])
+                row_data = {
+                    "#": i,
+                    "Title": task.title,
+                    "Section": task.section,
+                    "Max Score": str(task.max_score) if task.max_score is not None else "",
+                    "Deadline": task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else "",
+                }
+                writer.writerow([row_data[c] for c in filtered_columns])
         else:
-            writer.writerow(["#", "Title", "Score", "Status", "Deadline"])
+            all_columns = ["#", "Title", "Score", "Status", "Deadline"]
+            if columns is not None:
+                filtered_columns = [c for c in all_columns if c in columns]
+            else:
+                filtered_columns = all_columns
+
+            writer.writerow(filtered_columns)
             for i, task in enumerate(course.tasks, 1):
-                score = str(task.score) if task.score is not None else ""
-                deadline = (
-                    task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else ""
-                )
-                writer.writerow([i, task.title, score, task.status, deadline])
+                row_data = {
+                    "#": i,
+                    "Title": task.title,
+                    "Score": str(task.score) if task.score is not None else "",
+                    "Status": task.status,
+                    "Deadline": task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else "",
+                }
+                writer.writerow([row_data[c] for c in filtered_columns])
     return path
 
 
-def save_queue_csv(queue: ReviewQueue, output_dir: Path | str = ".") -> Path:
+def save_queue_csv(
+    queue: ReviewQueue, output_dir: Path | str = ".", columns: list[str] | None = None
+) -> Path:
     """Save queue entries to CSV."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"queue_{queue.course_id}.csv"
 
+    all_columns = ["#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"]
+    if columns is not None:
+        filtered_columns = [c for c in all_columns if c in columns]
+    else:
+        filtered_columns = all_columns
+
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            ["#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"]
-        )
+        writer.writerow(filtered_columns)
         for i, e in enumerate(queue.entries, 1):
-            writer.writerow(
-                [
-                    i,
-                    e.student_name,
-                    e.task_title,
-                    e.status_name,
-                    e.responsible_name,
-                    e.update_time,
-                    e.mark,
-                ]
-            )
+            row_data = {
+                "#": i,
+                "Student": e.student_name,
+                "Task": e.task_title,
+                "Status": e.status_name,
+                "Reviewer": e.responsible_name,
+                "Updated": e.update_time,
+                "Grade": e.mark,
+            }
+            writer.writerow([row_data[c] for c in filtered_columns])
     return path
 
 
@@ -205,6 +224,7 @@ def save_submissions_csv(
     submissions: dict[str, Submission] | list[Submission],
     course_id: int,
     output_dir: Path | str = ".",
+    columns: list[str] | None = None,
 ) -> Path:
     """Save submissions detail to CSV."""
     output_dir = Path(output_dir)
@@ -213,35 +233,39 @@ def save_submissions_csv(
 
     subs = submissions.values() if isinstance(submissions, dict) else submissions
 
+    all_columns = [
+        "Issue ID",
+        "Task",
+        "Student",
+        "Reviewer",
+        "Status",
+        "Grade",
+        "Max Score",
+        "Deadline",
+        "Comments",
+    ]
+
+    if columns is not None:
+        filtered_columns = [c for c in all_columns if c in columns]
+    else:
+        filtered_columns = all_columns
+
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "Issue ID",
-                "Task",
-                "Student",
-                "Reviewer",
-                "Status",
-                "Grade",
-                "Max Score",
-                "Deadline",
-                "Comments",
-            ]
-        )
+        writer.writerow(filtered_columns)
         for sub in subs:
-            writer.writerow(
-                [
-                    sub.issue_id,
-                    sub.task_title,
-                    sub.student_name,
-                    sub.reviewer_name,
-                    sub.status,
-                    sub.grade,
-                    sub.max_score,
-                    sub.deadline,
-                    len(sub.comments),
-                ]
-            )
+            row_data = {
+                "Issue ID": sub.issue_id,
+                "Task": sub.task_title,
+                "Student": sub.student_name,
+                "Reviewer": sub.reviewer_name,
+                "Status": sub.status,
+                "Grade": sub.grade,
+                "Max Score": sub.max_score,
+                "Deadline": sub.deadline,
+                "Comments": len(sub.comments),
+            }
+            writer.writerow([row_data[c] for c in filtered_columns])
     return path
 
 
@@ -286,3 +310,79 @@ def download_submission_files(
                 downloaded[link] = url_file
 
     return downloaded
+
+
+def save_gradebook_json(gradebook: Gradebook, output_dir: Path | str = ".") -> Path:
+    """Save gradebook to JSON."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"gradebook_{gradebook.course_id}.json"
+    path.write_text(json.dumps(asdict(gradebook), indent=2, default=str, ensure_ascii=False))
+    return path
+
+
+def save_gradebook_markdown(gradebook: Gradebook, output_dir: Path | str = ".") -> Path:
+    """Save gradebook to Markdown."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"gradebook_{gradebook.course_id}.md"
+
+    lines: list[str] = []
+    lines.append(f"# Gradebook - Course {gradebook.course_id}")
+    lines.append("")
+
+    for group in gradebook.groups:
+        teacher_info = f" ({group.teacher_name})" if group.teacher_name else ""
+        lines.append(f"## {group.group_name}{teacher_info}")
+        lines.append("")
+
+        header = "| # | Student | " + " | ".join(group.task_titles) + " | Total |"
+        sep = "|---|---------|" + "|".join(["------:" for _ in group.task_titles]) + "|------:|"
+        lines.append(header)
+        lines.append(sep)
+
+        for i, entry in enumerate(group.entries, 1):
+            scores_str = " | ".join(str(entry.scores.get(t, "-")) for t in group.task_titles)
+            lines.append(f"| {i} | {entry.student_name} | {scores_str} | {entry.total_score} |")
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def save_gradebook_csv(
+    gradebook: Gradebook, output_dir: Path | str = ".", columns: list[str] | None = None
+) -> Path:
+    """Save gradebook to CSV."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"gradebook_{gradebook.course_id}.csv"
+
+    all_tasks: list[str] = []
+    for group in gradebook.groups:
+        for t in group.task_titles:
+            if t not in all_tasks:
+                all_tasks.append(t)
+
+    all_columns = ["Group", "Student"] + all_tasks + ["Total"]
+
+    if columns is not None:
+        filtered_columns = [c for c in all_columns if c in columns]
+    else:
+        filtered_columns = all_columns
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(filtered_columns)
+        for group in gradebook.groups:
+            for entry in group.entries:
+                row_data = {
+                    "Group": group.group_name,
+                    "Student": entry.student_name,
+                    "Total": str(entry.total_score),
+                }
+                for t in all_tasks:
+                    row_data[t] = str(entry.scores.get(t, ""))
+
+                writer.writerow([row_data[c] for c in filtered_columns])
+    return path

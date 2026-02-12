@@ -106,3 +106,87 @@ class ReviewQueue:
     course_id: int
     entries: list[QueueEntry] = field(default_factory=list)
     submissions: dict[str, Submission] = field(default_factory=dict)
+
+
+@dataclass
+class GradebookEntry:
+    """One student row in the gradebook."""
+
+    student_name: str
+    student_url: str
+    scores: dict[str, float] = field(default_factory=dict)
+    statuses: dict[str, str] = field(default_factory=dict)
+    issue_urls: dict[str, str] = field(default_factory=dict)
+    total_score: float = 0.0
+
+
+@dataclass
+class GradebookGroup:
+    """One group within the gradebook."""
+
+    group_name: str
+    group_id: int
+    teacher_name: str = ""
+    task_titles: list[str] = field(default_factory=list)
+    max_scores: dict[str, float] = field(default_factory=dict)
+    entries: list[GradebookEntry] = field(default_factory=list)
+
+
+@dataclass
+class Gradebook:
+    """Gradebook for a course."""
+
+    course_id: int
+    groups: list[GradebookGroup] = field(default_factory=list)
+
+
+def filter_gradebook(
+    gradebook: Gradebook,
+    *,
+    group: str = "",
+    teacher: str = "",
+    student: str = "",
+    min_score: float | None = None,
+) -> Gradebook:
+    """Return a filtered copy of *gradebook*.
+
+    Parameters
+    ----------
+    group:
+        If non-empty, keep only groups whose name contains this substring
+        (case-insensitive).
+    teacher:
+        If non-empty, keep only groups whose teacher name matches exactly.
+    student:
+        If non-empty, keep only entries whose student name contains this
+        substring (case-insensitive).
+    min_score:
+        If set, keep only entries with ``total_score >= min_score``.
+    """
+    filtered_groups: list[GradebookGroup] = []
+    for g in gradebook.groups:
+        if group and group.lower() not in g.group_name.lower():
+            continue
+        if teacher and g.teacher_name != teacher:
+            continue
+
+        entries = list(g.entries)
+        if student:
+            needle = student.lower()
+            entries = [e for e in entries if needle in e.student_name.lower()]
+        if min_score is not None:
+            entries = [e for e in entries if e.total_score >= min_score]
+
+        if entries or (not student and min_score is None):
+            filtered_groups.append(
+                GradebookGroup(
+                    group_name=g.group_name,
+                    group_id=g.group_id,
+                    teacher_name=g.teacher_name,
+                    task_titles=list(g.task_titles),
+                    max_scores=dict(g.max_scores),
+                    entries=entries,
+                )
+            )
+
+    return Gradebook(course_id=gradebook.course_id, groups=filtered_groups)

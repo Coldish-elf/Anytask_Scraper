@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from anytask_scraper.models import Course, ReviewQueue, Submission, Task
+from anytask_scraper.models import Course, Gradebook, ReviewQueue, Submission, Task
 from anytask_scraper.parser import strip_html
 
 _STATUS_STYLES: dict[str, str] = {
@@ -53,9 +53,7 @@ def display_course(course: Course, console: Console | None = None) -> None:
 
     teachers_line = ", ".join(course.teachers) if course.teachers else "-"
     header = f"[bold]{course.title}[/bold]\nTeachers: {teachers_line}"
-    console.print(
-        Panel(header, title=f"Course {course.course_id}", border_style="blue")
-    )
+    console.print(Panel(header, title=f"Course {course.course_id}", border_style="blue"))
 
     if not course.tasks:
         console.print("[dim]No tasks found.[/dim]")
@@ -120,11 +118,7 @@ def display_task_detail(task: Task, console: Console | None = None) -> None:
     if console is None:
         console = Console()
 
-    desc = (
-        strip_html(task.description)
-        if task.description
-        else "[dim]No description[/dim]"
-    )
+    desc = strip_html(task.description) if task.description else "[dim]No description[/dim]"
     console.print(Panel(desc, title=task.title, border_style="green"))
 
 
@@ -196,14 +190,8 @@ def display_submission(submission: Submission, console: Console | None = None) -
 
     for i, comment in enumerate(submission.comments, 1):
         ts = str(comment.timestamp) if comment.timestamp else "-"
-        after = (
-            " [bold red][AFTER DEADLINE][/bold red]"
-            if comment.is_after_deadline
-            else ""
-        )
-        console.print(
-            f"\n  [bold]{i}. {comment.author_name}[/bold] [dim]{ts}[/dim]{after}"
-        )
+        after = " [bold red][AFTER DEADLINE][/bold red]" if comment.is_after_deadline else ""
+        console.print(f"\n  [bold]{i}. {comment.author_name}[/bold] [dim]{ts}[/dim]{after}")
         if comment.content_html:
             text = strip_html(comment.content_html)
             if text:
@@ -215,3 +203,56 @@ def display_submission(submission: Submission, console: Console | None = None) -
         if comment.links:
             for link in comment.links:
                 console.print(f"     [LINK] {link}")
+
+
+_GRADEBOOK_COLOR_MAP: dict[str, str] = {
+    "#65E31B": "green",
+    "#F0AD4E": "yellow",
+    "#818A91": "dim",
+    "#D9534F": "red",
+    "#5BC0DE": "cyan",
+}
+
+
+def display_gradebook(gradebook: Gradebook, console: Console | None = None) -> None:
+    """Render gradebook tables."""
+    if console is None:
+        console = Console()
+
+    console.print(
+        Panel(
+            f"[bold]{len(gradebook.groups)} group(s)[/bold]",
+            title=f"Gradebook - Course {gradebook.course_id}",
+            border_style="blue",
+        )
+    )
+
+    if not gradebook.groups:
+        console.print("[dim]No gradebook data found.[/dim]")
+        return
+
+    for group in gradebook.groups:
+        teacher_info = f"  ({group.teacher_name})" if group.teacher_name else ""
+        console.print(f"\n[bold magenta]{group.group_name}{teacher_info}[/bold magenta]")
+
+        table = Table(show_header=True, header_style="bold cyan", show_lines=True)
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Student", min_width=15)
+        for title in group.task_titles:
+            max_s = group.max_scores.get(title)
+            header = f"{title}\n({max_s})" if max_s is not None else title
+            table.add_column(header, justify="center", width=10)
+        table.add_column("Total", justify="right", width=8)
+
+        for i, entry in enumerate(group.entries, 1):
+            row: list[str | Text] = [str(i), entry.student_name]
+            for title in group.task_titles:
+                score = entry.scores.get(title)
+                color_hex = entry.statuses.get(title, "")
+                style = _GRADEBOOK_COLOR_MAP.get(color_hex, "")
+                score_str = str(score) if score is not None else "-"
+                row.append(Text(score_str, style=style))
+            row.append(str(entry.total_score))
+            table.add_row(*row)
+
+        console.print(table)

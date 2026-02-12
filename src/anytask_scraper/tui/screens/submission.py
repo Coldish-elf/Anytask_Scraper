@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Footer, Label, Static
+from textual.widgets import Label, Static
 
 from anytask_scraper.models import Submission
 from anytask_scraper.parser import strip_html
@@ -61,16 +61,8 @@ class SubmissionScreen(Screen[None]):
                     if comment.is_after_deadline:
                         card.add_class("-after-deadline")
 
-                    ts = (
-                        comment.timestamp.strftime("%d.%m.%Y %H:%M")
-                        if comment.timestamp
-                        else "-"
-                    )
-                    after_tag = (
-                        " [bold red](LATE)[/bold red]"
-                        if comment.is_after_deadline
-                        else ""
-                    )
+                    ts = comment.timestamp.strftime("%d.%m.%Y %H:%M") if comment.timestamp else "-"
+                    after_tag = " [bold red](LATE)[/bold red]" if comment.is_after_deadline else ""
 
                     header_label = Label(
                         f"[bold]{comment.author_name}[/bold]  [dim]{ts}[/dim]{after_tag}",
@@ -103,7 +95,7 @@ class SubmissionScreen(Screen[None]):
 
                     yield card
 
-        yield Footer()
+        yield Static("[dim]Esc[/dim] Back  [dim]j/k[/dim] Scroll", id="sub-key-bar")
 
     def action_go_back(self) -> None:
         self.app.pop_screen()

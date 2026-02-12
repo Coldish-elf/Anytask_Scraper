@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from rich.text import Text
@@ -16,7 +18,6 @@ from textual.screen import Screen
 from textual.widgets import (
     Button,
     DataTable,
-    Footer,
     Input,
     Label,
     OptionList,
@@ -31,6 +32,9 @@ from textual.widgets.option_list import Option
 
 from anytask_scraper.models import (
     Course,
+    Gradebook,
+    GradebookEntry,
+    GradebookGroup,
     QueueEntry,
     ReviewQueue,
     Submission,
@@ -40,6 +44,7 @@ from anytask_scraper.parser import (
     extract_csrf_from_queue_page,
     extract_issue_id_from_breadcrumb,
     parse_course_page,
+    parse_gradebook_page,
     parse_submission_page,
     strip_html,
 )
@@ -48,12 +53,27 @@ from anytask_scraper.storage import (
     save_course_csv,
     save_course_json,
     save_course_markdown,
+    save_gradebook_csv,
+    save_gradebook_json,
+    save_gradebook_markdown,
     save_queue_csv,
     save_queue_json,
     save_queue_markdown,
     save_submissions_csv,
 )
-from anytask_scraper.tui.widgets.filter_bar import QueueFilterBar, TaskFilterBar
+from anytask_scraper.tui.export_params import (
+    QUEUE_PARAMS,
+    SUBMISSIONS_PARAMS,
+    TASKS_STUDENT_PARAMS,
+    TASKS_TEACHER_PARAMS,
+    gradebook_params,
+)
+from anytask_scraper.tui.widgets.filter_bar import (
+    GradebookFilterBar,
+    QueueFilterBar,
+    TaskFilterBar,
+)
+from anytask_scraper.tui.widgets.param_selector import ParameterSelector
 
 _STATUS_STYLES: dict[str, str] = {
     "Зачтено": "bold green",
@@ -70,6 +90,23 @@ _QUEUE_STATUS_COLORS: dict[str, str] = {
     "default": "dim",
     "primary": "bold blue",
 }
+
+
+def make_safe_id(name: str) -> str:
+    """Convert arbitrary string to valid Textual widget ID fragment.
+
+    Handles Cyrillic, CJK, accented Latin, and other non-ASCII characters.
+    """
+    normalized = unicodedata.normalize("NFKD", name)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    safe = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_only).strip("-").lower()
+    if not safe:
+        import hashlib
+
+        safe = "h" + hashlib.md5(name.encode()).hexdigest()[:10]
+    if safe and safe[0].isdigit():
+        safe = "n" + safe
+    return safe
 
 
 def _parse_mark(mark: str) -> float:
@@ -124,7 +161,8 @@ class MainScreen(Screen[None]):
         Binding("shift+tab", "cycle_focus_back", "Prev", show=False),
         Binding("1", "tab_tasks", "Tasks", show=False),
         Binding("2", "tab_queue", "Queue", show=False),
-        Binding("3", "tab_export", "Export", show=False),
+        Binding("3", "tab_gradebook", "Gradebook", show=False),
+        Binding("4", "tab_export", "Export", show=False),
         Binding("a", "add_course", "Add", show=True),
         Binding("x", "remove_course", "Remove", show=True),
         Binding("h", "focus_left", show=False),
@@ -133,11 +171,12 @@ class MainScreen(Screen[None]):
         Binding("ctrl+down", "focus_table", show=False),
         Binding("ctrl+right", "filter_next", show=False),
         Binding("ctrl+left", "filter_prev", show=False),
-        Binding("slash", "focus_filter", "/ Filter", show=True),
+        Binding("slash", "focus_filter", "Filter", show=True),
         Binding("r", "reset_filters", "Reset", show=True),
         Binding("u", "undo_filters", "Undo", show=True),
-        Binding("question_mark", "toggle_help", "? Help", show=True),
+        Binding("question_mark", "toggle_help", "Help", show=True),
         Binding("escape", "dismiss_overlay", "Back", show=False),
+        Binding("ctrl+l", "logout", "Logout", show=True),
     ]
 
     def __init__(self) -> None:
@@ -147,16 +186,20 @@ class MainScreen(Screen[None]):
         self.filtered_tasks: list[Task] = []
         self.is_teacher_view = False
         self._selected_course_id: int | None = None
-        # Queue state
         self.all_queue_entries: list[QueueEntry] = []
         self.filtered_queue_entries: list[QueueEntry] = []
         self._queue_loaded_for: int | None = None
-        # Filter undo stacks
         self._task_filter_undo: dict[str, Any] | None = None
         self._queue_filter_undo: dict[str, Any] | None = None
         self._queue_sort_column: int | None = None
         self._queue_sort_reverse = False
-        # Help panel visible
+        self._gradebook_loaded_for: int | None = None
+        self.all_gradebook_groups: list[GradebookGroup] = []
+        self.filtered_gradebook_groups: list[GradebookGroup] = []
+        self._gb_filter_undo: dict[str, Any] | None = None
+        self._gb_sort_column: int | None = None
+        self._gb_sort_reverse = False
+        self._gb_all_tasks: list[str] = []
         self._help_visible = False
 
     def compose(self) -> ComposeResult:
@@ -183,7 +226,7 @@ class MainScreen(Screen[None]):
 
             with (
                 Vertical(id="right-pane"),
-                TabbedContent("Tasks", "Queue", "Export", id="main-tabs"),
+                TabbedContent("Tasks", "Queue", "Gradebook", "Export", id="main-tabs"),
             ):
                 with TabPane("Tasks", id="tasks-tab"):
                     yield TaskFilterBar(classes="filter-bar", id="task-filter-bar")
@@ -209,69 +252,104 @@ class MainScreen(Screen[None]):
                                 id="queue-detail-scroll",
                             )
 
-                with TabPane("Export", id="export-tab"), Vertical(id="export-area"):
-                    with Container(classes="option-group"):
-                        yield Label("Export Type:", classes="option-label")
-                        with RadioSet(id="export-type-set"):
-                            yield RadioButton(
-                                "Tasks", id="tasks-export-radio", value=True
+                with TabPane("Gradebook", id="gradebook-tab"):
+                    yield GradebookFilterBar(classes="filter-bar", id="gb-filter-bar")
+                    yield Label(
+                        "Select a course to view gradebook",
+                        id="gradebook-info-label",
+                    )
+                    yield DataTable(id="gradebook-table")
+
+                with (
+                    TabPane("Export", id="export-tab"),
+                    Horizontal(id="export-body"),
+                ):
+                    with VerticalScroll(id="export-controls"):
+                        with Container(classes="export-section"):
+                            yield Label("Export Type", classes="export-section-title")
+                            with RadioSet(id="export-type-set"):
+                                yield RadioButton("Tasks", id="tasks-export-radio", value=True)
+                                yield RadioButton("Queue", id="queue-export-radio")
+                                yield RadioButton("Submissions", id="subs-export-radio")
+                                yield RadioButton("Gradebook", id="gb-export-radio")
+                        with Container(classes="export-section"):
+                            yield Label("Format", classes="export-section-title")
+                            with RadioSet(id="format-set"):
+                                yield RadioButton("JSON", id="json-radio", value=True)
+                                yield RadioButton("Markdown", id="md-radio")
+                                yield RadioButton("CSV", id="csv-radio")
+                                yield RadioButton("Files Only", id="files-radio")
+                        with Container(
+                            classes="export-section",
+                            id="export-filter-section",
+                        ):
+                            yield Label(
+                                "Row Filters",
+                                classes="export-section-title",
                             )
-                            yield RadioButton("Queue", id="queue-export-radio")
-                            yield RadioButton("Submissions", id="subs-export-radio")
-                    with Container(classes="option-group"):
-                        yield Label("Format:", classes="option-label")
-                        with RadioSet(id="format-set"):
-                            yield RadioButton("JSON", id="json-radio", value=True)
-                            yield RadioButton("Markdown", id="md-radio")
-                            yield RadioButton("CSV", id="csv-radio")
-                            yield RadioButton("Files Only", id="files-radio")
-                    with Container(classes="option-group", id="export-filter-group"):
-                        yield Label("Filter (optional):", classes="option-label")
-                        yield Select[str](
-                            [],
-                            allow_blank=True,
-                            value=Select.BLANK,
-                            prompt="Task",
-                            id="export-filter-task",
+                            yield Label(
+                                "Filter exported rows (optional)",
+                                classes="export-filter-desc",
+                            )
+                            yield Select[str](
+                                [],
+                                allow_blank=True,
+                                value=Select.BLANK,
+                                prompt="Task",
+                                id="export-filter-task",
+                            )
+                            yield Select[str](
+                                [],
+                                allow_blank=True,
+                                value=Select.BLANK,
+                                prompt="Status",
+                                id="export-filter-status",
+                            )
+                            yield Select[str](
+                                [],
+                                allow_blank=True,
+                                value=Select.BLANK,
+                                prompt="Reviewer",
+                                id="export-filter-reviewer",
+                            )
+                        with Container(classes="export-section", id="export-params-section"):
+                            yield ParameterSelector(id="param-selector", classes="export-section")
+                        with Container(classes="export-section"):
+                            yield Label("Output Directory", classes="export-section-title")
+                            yield Input(value="./output", id="output-dir-input")
+                        with Container(classes="export-section"):
+                            yield Button("Export", variant="primary", id="export-btn")
+                            yield Label("", id="export-status-label")
+                    with Vertical(id="export-preview"):
+                        yield Label("Preview", id="export-preview-title")
+                        yield VerticalScroll(
+                            Static(
+                                "[dim]Select a course and format\nto see export preview[/dim]",
+                                id="export-preview-content",
+                            ),
+                            id="export-preview-scroll",
                         )
-                        yield Select[str](
-                            [],
-                            allow_blank=True,
-                            value=Select.BLANK,
-                            prompt="Status",
-                            id="export-filter-status",
-                        )
-                        yield Select[str](
-                            [],
-                            allow_blank=True,
-                            value=Select.BLANK,
-                            prompt="Reviewer",
-                            id="export-filter-reviewer",
-                        )
-                    with Container(classes="option-group"):
-                        yield Label("Output Directory:", classes="option-label")
-                        yield Input(value="./output", id="output-dir-input")
-                    with Container(classes="button-row"):
-                        yield Button("Export", variant="primary", id="export-btn")
-                    yield Label("", id="export-status-label")
 
         yield Static("", id="help-panel")
         yield Static("", id="status-line")
-        yield Footer()
+        yield Static("", id="key-bar")
 
     def on_mount(self) -> None:
-        # Task table
         table = self.query_one("#task-table", DataTable)
         table.cursor_type = "row"
         table.zebra_stripes = True
+        self._setup_task_table_columns()
+        self._rebuild_task_table()
 
-        # Queue table
         qtable = self.query_one("#queue-table", DataTable)
         qtable.cursor_type = "row"
         qtable.zebra_stripes = True
-        qtable.add_columns(
-            "#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"
-        )
+        qtable.add_columns("#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade")
+
+        gtable = self.query_one("#gradebook-table", DataTable)
+        gtable.cursor_type = "row"
+        gtable.zebra_stripes = True
+        self._rebuild_gradebook_table([])
 
         self.query_one("#course-list", OptionList).focus()
 
@@ -279,12 +357,35 @@ class MainScreen(Screen[None]):
         for cid in saved_ids:
             if cid not in self.app.courses:  # type: ignore[attr-defined]
                 self._fetch_course(cid)
+        self._update_key_bar()
 
-    #  Inline status line
+    def _update_key_bar(self) -> None:
+        """Update the key hints bar based on current context."""
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        active = tabs.active
 
-    def _show_status(
-        self, message: str, kind: str = "info", timeout: float = 4
-    ) -> None:
+        common = (
+            "[dim]ctrl+q[/dim] Quit  "
+            "[dim]a[/dim] Add  "
+            "[dim]x[/dim] Remove  "
+            "[dim]ctrl+l[/dim] Logout"
+        )
+
+        if active in ("tasks-tab", "queue-tab", "gradebook-tab"):
+            hints = (
+                "[dim]/[/dim] Filter  "
+                "[dim]r[/dim] Reset  "
+                "[dim]u[/dim] Undo  "
+                "[dim]?[/dim] Help  " + common
+            )
+        elif active == "export-tab":
+            hints = "[dim]ctrl+\u2191/\u2193[/dim] Navigate  [dim]?[/dim] Help  " + common
+        else:
+            hints = common
+
+        self.query_one("#key-bar", Static).update(hints)
+
+    def _show_status(self, message: str, kind: str = "info", timeout: float = 4) -> None:
         """Show an inline message in the status line."""
         line = self.query_one("#status-line", Static)
         style_map = {
@@ -302,8 +403,6 @@ class MainScreen(Screen[None]):
     def _clear_status(self) -> None:
         self.query_one("#status-line", Static).update("")
 
-    #  Help panel
-
     def action_toggle_help(self) -> None:
         panel = self.query_one("#help-panel", Static)
         self._help_visible = not self._help_visible
@@ -313,7 +412,7 @@ class MainScreen(Screen[None]):
                 "  Tab / Shift+Tab   cycle focus\n"
                 "  h / l             left / right pane\n"
                 "  j / k             up / down\n"
-                "  1 / 2 / 3         switch tabs\n"
+                "  1 / 2 / 3 / 4     switch tabs\n"
                 "\n"
                 "[bold]Filters[/bold]\n"
                 "  /                 focus filter\n"
@@ -336,8 +435,6 @@ class MainScreen(Screen[None]):
             panel.update("")
             panel.remove_class("visible")
 
-    #  Tab switching
-
     def action_tab_tasks(self) -> None:
         self.query_one("#main-tabs", TabbedContent).active = "tasks-tab"
         self.query_one("#task-table", DataTable).focus()
@@ -350,12 +447,17 @@ class MainScreen(Screen[None]):
         self.query_one("#main-tabs", TabbedContent).active = "export-tab"
         self.query_one("#export-type-set", RadioSet).focus()
 
+    def action_tab_gradebook(self) -> None:
+        self.query_one("#main-tabs", TabbedContent).active = "gradebook-tab"
+        self.query_one("#gradebook-table", DataTable).focus()
+
     @on(TabbedContent.TabActivated, "#main-tabs")
     def _tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        self._update_key_bar()
         if event.pane.id == "queue-tab":
             self._maybe_load_queue()
-
-    #  Focus cycling
+        elif event.pane.id == "gradebook-tab":
+            self._maybe_load_gradebook()
 
     def _get_focus_order(self) -> list[str]:
         """Return IDs of focusable zones for current tab."""
@@ -366,8 +468,19 @@ class MainScreen(Screen[None]):
             zones += ["#task-table", "#task-filter-bar"]
         elif active == "queue-tab":
             zones += ["#queue-table", "#queue-filter-bar"]
+        elif active == "gradebook-tab":
+            zones += ["#gradebook-table", "#gb-filter-bar"]
         elif active == "export-tab":
-            zones += ["#export-type-set", "#format-set", "#output-dir-input"]
+            zones += [
+                "#export-type-set",
+                "#format-set",
+                "#export-filter-task",
+                "#export-filter-status",
+                "#export-filter-reviewer",
+                "#export-column-list",
+                "#output-dir-input",
+                "#export-btn",
+            ]
         return zones
 
     def action_cycle_focus(self) -> None:
@@ -375,13 +488,11 @@ class MainScreen(Screen[None]):
         if focused is not None:
             tabs = self.query_one("#main-tabs", TabbedContent)
             active = tabs.active
-            # If in filter bar, try cycling within it first
             if active == "tasks-tab":
                 task_bar = self.query_one("#task-filter-bar", TaskFilterBar)
                 if focused in task_bar.walk_children():
                     if task_bar.focus_next_filter():
                         return
-                    # Last filter element -- go to table
                     self.query_one("#task-table", DataTable).focus()
                     return
             elif active == "queue-tab":
@@ -391,8 +502,14 @@ class MainScreen(Screen[None]):
                         return
                     self.query_one("#queue-table", DataTable).focus()
                     return
+            elif active == "gradebook-tab":
+                gb_bar = self.query_one("#gb-filter-bar", GradebookFilterBar)
+                if focused in gb_bar.walk_children():
+                    if gb_bar.focus_next_filter():
+                        return
+                    self.query_one("#gradebook-table", DataTable).focus()
+                    return
 
-        # Default zone cycling
         zones = self._get_focus_order()
         current = self._find_current_zone(zones)
         next_idx = (current + 1) % len(zones)
@@ -403,13 +520,11 @@ class MainScreen(Screen[None]):
         if focused is not None:
             tabs = self.query_one("#main-tabs", TabbedContent)
             active = tabs.active
-            # If in filter bar, try cycling backward within it first
             if active == "tasks-tab":
                 task_bar = self.query_one("#task-filter-bar", TaskFilterBar)
                 if focused in task_bar.walk_children():
                     if task_bar.focus_prev_filter():
                         return
-                    # First filter element -- go to course list
                     self.query_one("#course-list", OptionList).focus()
                     return
             elif active == "queue-tab":
@@ -419,8 +534,14 @@ class MainScreen(Screen[None]):
                         return
                     self.query_one("#course-list", OptionList).focus()
                     return
+            elif active == "gradebook-tab":
+                gb_bar = self.query_one("#gb-filter-bar", GradebookFilterBar)
+                if focused in gb_bar.walk_children():
+                    if gb_bar.focus_prev_filter():
+                        return
+                    self.query_one("#course-list", OptionList).focus()
+                    return
 
-        # Default zone cycling
         zones = self._get_focus_order()
         current = self._find_current_zone(zones)
         prev_idx = (current - 1) % len(zones)
@@ -455,6 +576,12 @@ class MainScreen(Screen[None]):
         elif zone_id == "#queue-table":
             self.query_one("#queue-table", DataTable).focus()
             self._focus_left_pane = False
+        elif zone_id == "#gradebook-table":
+            self.query_one("#gradebook-table", DataTable).focus()
+            self._focus_left_pane = False
+        elif zone_id == "#gb-filter-bar":
+            self.query_one("#gb-filter-bar", GradebookFilterBar).focus_text()
+            self._focus_left_pane = False
         elif zone_id == "#format-set":
             self.query_one("#format-set", RadioSet).focus()
             self._focus_left_pane = False
@@ -473,23 +600,64 @@ class MainScreen(Screen[None]):
     def action_focus_filter(self) -> None:
         tabs = self.query_one("#main-tabs", TabbedContent)
         active = tabs.active
+        if active == "export-tab":
+            self._export_focus_prev()
+            return
         if active == "tasks-tab":
             self.query_one("#task-filter-bar", TaskFilterBar).focus_text()
         elif active == "queue-tab":
             self.query_one("#queue-filter-bar", QueueFilterBar).focus_text()
+        elif active == "gradebook-tab":
+            self.query_one("#gb-filter-bar", GradebookFilterBar).focus_text()
 
     def action_focus_table(self) -> None:
         tabs = self.query_one("#main-tabs", TabbedContent)
         active = tabs.active
+        if active == "export-tab":
+            self._export_focus_next()
+            return
         if active == "tasks-tab":
             self.query_one("#task-table", DataTable).focus()
         elif active == "queue-tab":
             self.query_one("#queue-table", DataTable).focus()
-        elif active == "export-tab":
-            self.query_one("#output-dir-input", Input).focus()
+        elif active == "gradebook-tab":
+            self.query_one("#gradebook-table", DataTable).focus()
+
+    _EXPORT_FOCUS_ORDER = [
+        "#export-type-set",
+        "#format-set",
+        "#export-filter-task",
+        "#export-filter-status",
+        "#export-filter-reviewer",
+        "#param-option-list",
+        "#output-dir-input",
+        "#export-btn",
+    ]
+
+    def _export_focus_next(self) -> None:
+        current = self._find_export_focus_index()
+        next_idx = min(current + 1, len(self._EXPORT_FOCUS_ORDER) - 1)
+        self.query_one(self._EXPORT_FOCUS_ORDER[next_idx]).focus()
+
+    def _export_focus_prev(self) -> None:
+        current = self._find_export_focus_index()
+        prev_idx = max(current - 1, 0)
+        self.query_one(self._EXPORT_FOCUS_ORDER[prev_idx]).focus()
+
+    def _find_export_focus_index(self) -> int:
+        focused = self.focused
+        if focused is None:
+            return 0
+        for i, wid in enumerate(self._EXPORT_FOCUS_ORDER):
+            try:
+                widget = self.query_one(wid)
+                if widget is focused or focused in widget.walk_children():
+                    return i
+            except Exception:
+                continue
+        return 0
 
     def action_filter_next(self) -> None:
-        # Let Input handle ctrl+right for word navigation
         if isinstance(self.focused, Input):
             return
         tabs = self.query_one("#main-tabs", TabbedContent)
@@ -498,9 +666,10 @@ class MainScreen(Screen[None]):
             self.query_one("#task-filter-bar", TaskFilterBar).focus_next_filter()
         elif active == "queue-tab":
             self.query_one("#queue-filter-bar", QueueFilterBar).focus_next_filter()
+        elif active == "gradebook-tab":
+            self.query_one("#gb-filter-bar", GradebookFilterBar).focus_next_filter()
 
     def action_filter_prev(self) -> None:
-        # Let Input handle ctrl+left for word navigation
         if isinstance(self.focused, Input):
             return
         tabs = self.query_one("#main-tabs", TabbedContent)
@@ -509,8 +678,8 @@ class MainScreen(Screen[None]):
             self.query_one("#task-filter-bar", TaskFilterBar).focus_prev_filter()
         elif active == "queue-tab":
             self.query_one("#queue-filter-bar", QueueFilterBar).focus_prev_filter()
-
-    #  Key mappings (j/k)
+        elif active == "gradebook-tab":
+            self.query_one("#gb-filter-bar", GradebookFilterBar).focus_prev_filter()
 
     def on_key(self, event: object) -> None:
         from textual.events import Key
@@ -530,8 +699,6 @@ class MainScreen(Screen[None]):
                 event.prevent_default()
                 focused.action_cursor_up()
 
-    #  Filter reset / undo
-
     def action_reset_filters(self) -> None:
         tabs = self.query_one("#main-tabs", TabbedContent)
         active = tabs.active
@@ -544,6 +711,11 @@ class MainScreen(Screen[None]):
             queue_bar = self.query_one("#queue-filter-bar", QueueFilterBar)
             self._queue_filter_undo = queue_bar.save_state()
             queue_bar.reset()
+            self._show_status("Filters reset (u to undo)", kind="info", timeout=3)
+        elif active == "gradebook-tab":
+            gb_bar = self.query_one("#gb-filter-bar", GradebookFilterBar)
+            self._gb_filter_undo = gb_bar.save_state()
+            gb_bar.reset()
             self._show_status("Filters reset (u to undo)", kind="info", timeout=3)
 
     def action_undo_filters(self) -> None:
@@ -559,10 +731,13 @@ class MainScreen(Screen[None]):
             queue_bar.restore_state(self._queue_filter_undo)
             self._queue_filter_undo = None
             self._show_status("Filters restored", kind="success", timeout=3)
+        elif active == "gradebook-tab" and self._gb_filter_undo is not None:
+            gb_bar = self.query_one("#gb-filter-bar", GradebookFilterBar)
+            gb_bar.restore_state(self._gb_filter_undo)
+            self._gb_filter_undo = None
+            self._show_status("Filters restored", kind="success", timeout=3)
         else:
             self._show_status("Nothing to undo", kind="warning", timeout=2)
-
-    #  Add course
 
     def action_add_course(self) -> None:
         bar = self.query_one("#course-add-bar")
@@ -593,8 +768,6 @@ class MainScreen(Screen[None]):
         self._show_status(f"Loading course {course_id}...")
         self._fetch_course(course_id)
 
-    #  Remove course
-
     def action_remove_course(self) -> None:
         if self._selected_course_id is None:
             self._show_status("No course selected", kind="warning")
@@ -618,12 +791,8 @@ class MainScreen(Screen[None]):
         self._rebuild_queue_table()
         self._clear_queue_detail()
         self._queue_loaded_for = None
-        self.query_one("#queue-info-label", Label).update(
-            "Select a teacher course to view queue"
-        )
+        self.query_one("#queue-info-label", Label).update("Select a teacher course to view queue")
         self._show_status(f"Removed course {cid}", kind="success")
-
-    #  Dismiss overlays on Escape
 
     def action_dismiss_overlay(self) -> None:
         add_bar = self.query_one("#course-add-bar")
@@ -637,7 +806,19 @@ class MainScreen(Screen[None]):
             help_panel.update("")
             help_panel.remove_class("visible")
 
-    #  Course selection
+    def action_logout(self) -> None:
+        """Return to login screen."""
+        if self.app.client is not None:  # type: ignore[attr-defined]
+            self.app.client.close()  # type: ignore[attr-defined]
+        self.app.client = None  # type: ignore[attr-defined]
+        self.app.session_path = ""  # type: ignore[attr-defined]
+        self.app.current_course = None  # type: ignore[attr-defined]
+        self.app.courses = {}  # type: ignore[attr-defined]
+        self.app.queue_cache = {}  # type: ignore[attr-defined]
+        self.app.gradebook_cache = {}  # type: ignore[attr-defined]
+        from anytask_scraper.tui.screens.login import LoginScreen
+
+        self.app.switch_screen(LoginScreen())
 
     @on(OptionList.OptionSelected, "#course-list")
     def _course_selected(self, event: OptionList.OptionSelected) -> None:
@@ -666,10 +847,18 @@ class MainScreen(Screen[None]):
         self._rebuild_queue_table()
         self._clear_queue_detail()
 
-        # Clear export status on course switch
+        self._gradebook_loaded_for = None
+        self.all_gradebook_groups = []
+        self.filtered_gradebook_groups = []
+        self._gb_sort_column = None
+        self._gb_sort_reverse = False
+        self._gb_all_tasks = []
+        self.query_one("#gb-filter-bar", GradebookFilterBar).reset()
+        self._rebuild_gradebook_table([])
+        self.query_one("#gradebook-info-label", Label).update("Select a course to view gradebook")
+
         self._set_export_status("")
 
-        # Enable/disable Queue tab and Queue/Submissions export based on teacher access
         try:
             queue_export_radio = self.query_one("#queue-export-radio", RadioButton)
             subs_export_radio = self.query_one("#subs-export-radio", RadioButton)
@@ -679,21 +868,23 @@ class MainScreen(Screen[None]):
             pass
 
         if self.is_teacher_view:
-            self.query_one("#queue-info-label", Label).update(
-                "Switch to Queue tab to load"
-            )
+            self.query_one("#queue-info-label", Label).update("Queue loads on demand")
         else:
             self.query_one("#queue-info-label", Label).update(
                 "Queue available for teacher courses only"
             )
 
         self._update_export_filters()
+        self._update_params()
+        self._refresh_export_preview()
 
         tabs = self.query_one("#main-tabs", TabbedContent)
         if tabs.active == "queue-tab":
             self._maybe_load_queue()
-
-    #  Task filter handling
+        elif tabs.active == "gradebook-tab":
+            self._maybe_load_gradebook()
+        elif tabs.active == "export-tab":
+            self._start_export_preload(self._get_current_export_type())
 
     @on(TaskFilterBar.Changed)
     def _handle_task_filter(self, event: TaskFilterBar.Changed) -> None:
@@ -710,11 +901,7 @@ class MainScreen(Screen[None]):
     def _update_task_filter_options(self) -> None:
         statuses = sorted({t.status for t in self.all_tasks if t.status})
         sections = sorted({t.section for t in self.all_tasks if t.section})
-        self.query_one("#task-filter-bar", TaskFilterBar).update_options(
-            statuses, sections
-        )
-
-    #  Task selection
+        self.query_one("#task-filter-bar", TaskFilterBar).update_options(statuses, sections)
 
     @on(DataTable.RowHighlighted, "#task-table")
     def _task_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -738,19 +925,13 @@ class MainScreen(Screen[None]):
         if 0 <= idx < len(self.filtered_tasks):
             self._show_detail(self.filtered_tasks[idx])
 
-    #  Queue filter handling
-
     @on(QueueFilterBar.Changed)
     def _handle_queue_filter(self, event: QueueFilterBar.Changed) -> None:
         needle = event.text.lower()
         self.filtered_queue_entries = [
             e
             for e in self.all_queue_entries
-            if (
-                not needle
-                or needle in e.student_name.lower()
-                or needle in e.task_title.lower()
-            )
+            if (not needle or needle in e.student_name.lower() or needle in e.task_title.lower())
             and (not event.student or e.student_name == event.student)
             and (not event.task or e.task_title == event.task)
             and (not event.status or e.status_name == event.status)
@@ -759,21 +940,15 @@ class MainScreen(Screen[None]):
         self._rebuild_queue_table()
 
     def _update_queue_filter_options(self) -> None:
-        students = sorted(
-            {e.student_name for e in self.all_queue_entries if e.student_name}
-        )
+        students = sorted({e.student_name for e in self.all_queue_entries if e.student_name})
         tasks = sorted({e.task_title for e in self.all_queue_entries if e.task_title})
-        statuses = sorted(
-            {e.status_name for e in self.all_queue_entries if e.status_name}
-        )
+        statuses = sorted({e.status_name for e in self.all_queue_entries if e.status_name})
         reviewers = sorted(
             {e.responsible_name for e in self.all_queue_entries if e.responsible_name}
         )
         self.query_one("#queue-filter-bar", QueueFilterBar).update_options(
             students, tasks, statuses, reviewers
         )
-
-    #  Queue row highlight → auto-load preview
 
     @on(DataTable.RowHighlighted, "#queue-table")
     def _queue_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -826,7 +1001,6 @@ class MainScreen(Screen[None]):
     def _load_queue_preview(self, entry: QueueEntry) -> None:
         """Auto-load submission preview for queue detail pane."""
         try:
-            # Check cache first
             if self._selected_course_id is not None:
                 cache = self.app.queue_cache.get(  # type: ignore[attr-defined]
                     self._selected_course_id
@@ -840,7 +1014,6 @@ class MainScreen(Screen[None]):
             if not client:
                 return
 
-            # Show loading state
             self.app.call_from_thread(self._show_queue_preview_loading, entry)
 
             html = client.fetch_submission_page(entry.issue_url)
@@ -851,7 +1024,6 @@ class MainScreen(Screen[None]):
 
             sub = parse_submission_page(html, issue_id)
 
-            # Cache it
             if self._selected_course_id is not None:
                 cache = self.app.queue_cache.get(  # type: ignore[attr-defined]
                     self._selected_course_id
@@ -905,14 +1077,8 @@ class MainScreen(Screen[None]):
                 )
             )
             for comment in sub.comments:
-                ts = (
-                    comment.timestamp.strftime("%d.%m.%Y %H:%M")
-                    if comment.timestamp
-                    else "-"
-                )
-                after = (
-                    " [bold red](LATE)[/bold red]" if comment.is_after_deadline else ""
-                )
+                ts = comment.timestamp.strftime("%d.%m.%Y %H:%M") if comment.timestamp else "-"
+                after = " [bold red](LATE)[/bold red]" if comment.is_after_deadline else ""
                 scroll.mount(
                     Label(
                         f"[bold]{comment.author_name}[/bold] [dim]{ts}[/dim]{after}",
@@ -944,8 +1110,6 @@ class MainScreen(Screen[None]):
         scroll.remove_children()
         scroll.mount(Label("[dim]Select a queue entry[/dim]"))
 
-    #  Queue column sorting
-
     @on(DataTable.HeaderSelected, "#queue-table")
     def _queue_header_selected(self, event: DataTable.HeaderSelected) -> None:
         col_idx = event.column_index
@@ -971,36 +1135,46 @@ class MainScreen(Screen[None]):
         }
         key_fn = key_map.get(col)
         if key_fn:
-            self.filtered_queue_entries.sort(
-                key=key_fn, reverse=self._queue_sort_reverse
-            )
+            self.filtered_queue_entries.sort(key=key_fn, reverse=self._queue_sort_reverse)
             self._rebuild_queue_table()
-
-    #  Export
 
     @on(RadioSet.Changed, "#export-type-set")
     def _export_type_changed(self, event: RadioSet.Changed) -> None:
         self._update_export_filters()
+        self._update_params()
+        self._start_export_preload(self._get_current_export_type())
+        self._refresh_export_preview()
+
+    @on(RadioSet.Changed, "#format-set")
+    def _format_changed(self, event: RadioSet.Changed) -> None:
+        self._refresh_export_preview()
+
+    @on(Select.Changed, "#export-filter-task")
+    @on(Select.Changed, "#export-filter-status")
+    @on(Select.Changed, "#export-filter-reviewer")
+    def _export_filter_changed(self, event: Select.Changed) -> None:
+        """Handle row filter changes - refresh preview."""
+        event.stop()
+        self._refresh_export_preview()
 
     def _update_export_filters(self) -> None:
+        """Update row filter dropdowns based on current export type."""
         try:
-            radioset = self.query_one("#export-type-set", RadioSet)
+            task_select = self.query_one("#export-filter-task", Select)
+            status_select = self.query_one("#export-filter-status", Select)
+            reviewer_select = self.query_one("#export-filter-reviewer", Select)
         except Exception:
             return
-        btn = radioset.pressed_button
-        if not btn:
-            return
 
-        export_type = btn.id or ""
-        task_select = self.query_one("#export-filter-task", Select)
-        status_select = self.query_one("#export-filter-status", Select)
-        reviewer_select = self.query_one("#export-filter-reviewer", Select)
+        export_type = self._get_current_export_type()
 
+        task_select.value = Select.BLANK
+        status_select.value = Select.BLANK
+        reviewer_select.value = Select.BLANK
         task_select.set_options([])
         status_select.set_options([])
         reviewer_select.set_options([])
 
-        # Toggle Files Only radio visibility - only for Submissions
         try:
             files_radio = self.query_one("#files-radio", RadioButton)
             files_radio.disabled = export_type != "subs-export-radio"
@@ -1014,18 +1188,10 @@ class MainScreen(Screen[None]):
             task_select.disabled = True
             status_select.disabled = False
         elif export_type in ("queue-export-radio", "subs-export-radio"):
-            tasks = sorted(
-                {e.task_title for e in self.all_queue_entries if e.task_title}
-            )
-            statuses = sorted(
-                {e.status_name for e in self.all_queue_entries if e.status_name}
-            )
+            tasks = sorted({e.task_title for e in self.all_queue_entries if e.task_title})
+            statuses = sorted({e.status_name for e in self.all_queue_entries if e.status_name})
             reviewers = sorted(
-                {
-                    e.responsible_name
-                    for e in self.all_queue_entries
-                    if e.responsible_name
-                }
+                {e.responsible_name for e in self.all_queue_entries if e.responsible_name}
             )
             task_select.set_options([(t, t) for t in tasks])
             status_select.set_options([(s, s) for s in statuses])
@@ -1033,6 +1199,618 @@ class MainScreen(Screen[None]):
             task_select.disabled = False
             status_select.disabled = False
             reviewer_select.disabled = False
+        elif export_type == "gb-export-radio":
+            groups = sorted({g.group_name for g in self.all_gradebook_groups if g.group_name})
+            teachers = sorted({g.teacher_name for g in self.all_gradebook_groups if g.teacher_name})
+            task_select.set_options([(g, g) for g in groups])
+            reviewer_select.set_options([(t, t) for t in teachers])
+            task_select.disabled = False
+            status_select.disabled = True
+            reviewer_select.disabled = False
+
+    def _get_current_export_filters(self) -> dict[str, str]:
+        """Get current row filter values."""
+        filters: dict[str, str] = {}
+        try:
+            task_val = self.query_one("#export-filter-task", Select).value
+            if task_val is not Select.BLANK:
+                filters["task"] = str(task_val)
+            status_val = self.query_one("#export-filter-status", Select).value
+            if status_val is not Select.BLANK:
+                filters["status"] = str(status_val)
+            reviewer_val = self.query_one("#export-filter-reviewer", Select).value
+            if reviewer_val is not Select.BLANK:
+                filters["reviewer"] = str(reviewer_val)
+        except Exception:
+            pass
+        return filters
+
+    def _update_params(self) -> None:
+        """Rebuild parameter list based on current export type and course data."""
+        try:
+            selector = self.query_one("#param-selector", ParameterSelector)
+        except Exception:
+            return
+
+        export_type = self._get_current_export_type()
+
+        if export_type == "tasks-export-radio":
+            params = TASKS_TEACHER_PARAMS if self.is_teacher_view else TASKS_STUDENT_PARAMS
+        elif export_type == "queue-export-radio":
+            params = QUEUE_PARAMS
+        elif export_type == "subs-export-radio":
+            params = SUBMISSIONS_PARAMS
+        elif export_type == "gb-export-radio":
+            all_tasks: list[str] = []
+            for g in self.all_gradebook_groups:
+                for t in g.task_titles:
+                    if t not in all_tasks:
+                        all_tasks.append(t)
+            params = gradebook_params(all_tasks)
+        else:
+            params = []
+
+        selector.set_params(params)
+
+    @on(ParameterSelector.Changed)
+    def _params_changed(self, event: ParameterSelector.Changed) -> None:
+        """Handle parameter selection changes - refresh preview."""
+        self._refresh_export_preview()
+
+    def _get_included_columns(self) -> list[str]:
+        """Get list of selected parameter names."""
+        try:
+            selector = self.query_one("#param-selector", ParameterSelector)
+            return selector.get_included()
+        except Exception:
+            return []
+
+    def _refresh_export_preview(self) -> None:
+        """Regenerate the export preview pane."""
+        try:
+            export_type = self._get_current_export_type()
+            fmt = self._get_current_export_format()
+            preview_text = self._generate_preview(export_type, fmt)
+            self.query_one("#export-preview-content", Static).update(preview_text)
+        except Exception:
+            pass
+
+    def _start_export_preload(self, export_type: str) -> None:
+        """Preload export data on type selection so preview/export are ready."""
+        course_id = self._selected_course_id
+        if course_id is None:
+            return
+        if export_type == "queue-export-radio" and not self.is_teacher_view:
+            return
+        if export_type == "subs-export-radio" and not self.is_teacher_view:
+            return
+        if export_type == "queue-export-radio":
+            self.query_one("#export-preview-content", Static).update(
+                "[dim]Loading queue data...[/dim]"
+            )
+            self._preload_export_data(export_type, course_id)
+        elif export_type == "subs-export-radio":
+            self.query_one("#export-preview-content", Static).update(
+                "[dim]Loading submissions source data...[/dim]"
+            )
+            self._preload_export_data(export_type, course_id)
+        elif export_type == "gb-export-radio":
+            self.query_one("#export-preview-content", Static).update(
+                "[dim]Loading gradebook data...[/dim]"
+            )
+            self._preload_export_data(export_type, course_id)
+
+    @work(thread=True)
+    def _preload_export_data(self, export_type: str, course_id: int) -> None:
+        """Load required data for export type and refresh preview on completion."""
+        try:
+            loaded_message = "Preload complete"
+            if export_type in ("queue-export-radio", "subs-export-radio"):
+                self.app.call_from_thread(
+                    self._set_export_status,
+                    "Loading queue data...",
+                    "info",
+                )
+                queue = self._load_queue_for_export(course_id)
+                loaded_message = f"Queue loaded: {len(queue.entries)} entries"
+            elif export_type == "gb-export-radio":
+                self.app.call_from_thread(
+                    self._set_export_status,
+                    "Loading gradebook data...",
+                    "info",
+                )
+                gradebook = self._load_gradebook_for_export(course_id)
+                total = sum(len(g.entries) for g in gradebook.groups)
+                loaded_message = (
+                    f"Gradebook loaded: {len(gradebook.groups)} group(s), {total} students"
+                )
+            self.app.call_from_thread(self._update_params)
+            self.app.call_from_thread(self._refresh_export_preview)
+            self.app.call_from_thread(self._set_export_status, loaded_message, "success")
+        except Exception as e:
+            self.app.call_from_thread(
+                self._set_export_status,
+                f"Failed to preload export data: {e}",
+                "error",
+            )
+            self.app.call_from_thread(self._refresh_export_preview)
+
+    def _get_current_export_type(self) -> str:
+        try:
+            btn = self.query_one("#export-type-set", RadioSet).pressed_button
+            return (btn.id or "tasks-export-radio") if btn else "tasks-export-radio"
+        except Exception:
+            return "tasks-export-radio"
+
+    def _get_current_export_format(self) -> str:
+        try:
+            btn = self.query_one("#format-set", RadioSet).pressed_button
+            fmt_map = {
+                "json-radio": "json",
+                "md-radio": "markdown",
+                "csv-radio": "csv",
+                "files-radio": "files",
+            }
+            return fmt_map.get(btn.id or "", "json") if btn else "json"
+        except Exception:
+            return "json"
+
+    def _generate_preview(self, export_type: str, format_type: str) -> str:
+        """Generate a text preview of the export output."""
+        if self._selected_course_id is None:
+            return "[dim]Select a course first[/dim]"
+
+        course_id = self._selected_course_id
+        max_items = 2
+        included = self._get_included_columns()
+        filters = self._get_current_export_filters()
+
+        if export_type == "tasks-export-radio":
+            tasks = list(self.all_tasks)
+            if filters.get("status"):
+                tasks = [t for t in tasks if t.status == filters["status"]]
+            if not tasks:
+                return "[dim]No tasks available[/dim]"
+            return self._preview_tasks(
+                tasks[:max_items], format_type, course_id, len(tasks), included
+            )
+
+        elif export_type == "queue-export-radio":
+            q_entries = list(self.all_queue_entries)
+            if not q_entries:
+                cache = self.app.queue_cache  # type: ignore[attr-defined]
+                q_entries = list(cache.get(course_id, ReviewQueue(course_id=course_id)).entries)
+            if filters.get("task"):
+                q_entries = [e for e in q_entries if e.task_title == filters["task"]]
+            if filters.get("status"):
+                q_entries = [e for e in q_entries if e.status_name == filters["status"]]
+            if filters.get("reviewer"):
+                q_entries = [e for e in q_entries if e.responsible_name == filters["reviewer"]]
+            if not q_entries:
+                return "[dim]Queue data will be loaded during export[/dim]"
+            return self._preview_queue(
+                q_entries[:max_items], format_type, course_id, len(q_entries), included
+            )
+
+        elif export_type == "gb-export-radio":
+            groups = list(self.all_gradebook_groups)
+            if not groups:
+                cache = self.app.gradebook_cache  # type: ignore[attr-defined]
+                cached = cache.get(course_id)
+                if cached is not None:
+                    groups = list(cached.groups)
+            if filters.get("task"):
+                groups = [g for g in groups if g.group_name == filters["task"]]
+            if filters.get("reviewer"):
+                groups = [g for g in groups if g.teacher_name == filters["reviewer"]]
+            total = sum(len(g.entries) for g in groups)
+            if not total:
+                return "[dim]Gradebook data will be loaded during export[/dim]"
+            return self._preview_gradebook(groups, format_type, course_id, total, included)
+
+        elif export_type == "subs-export-radio":
+            if format_type == "files":
+                return "[dim]Files Only mode:\nDownloads submission files\nto student folders[/dim]"
+            sub_entries = list(self.all_queue_entries)
+            if not sub_entries:
+                cache = self.app.queue_cache  # type: ignore[attr-defined]
+                sub_entries = list(cache.get(course_id, ReviewQueue(course_id=course_id)).entries)
+            if filters.get("task"):
+                sub_entries = [e for e in sub_entries if e.task_title == filters["task"]]
+            if filters.get("status"):
+                sub_entries = [e for e in sub_entries if e.status_name == filters["status"]]
+            if filters.get("reviewer"):
+                sub_entries = [e for e in sub_entries if e.responsible_name == filters["reviewer"]]
+            if not sub_entries:
+                return "[dim]Queue data will be loaded during export[/dim]"
+            return self._preview_submissions(
+                sub_entries[:max_items], format_type, course_id, len(sub_entries), included
+            )
+
+        return "[dim]Select export type[/dim]"
+
+    def _preview_tasks(
+        self, tasks: list[Task], fmt: str, course_id: int, total: int, included: list[str]
+    ) -> str:
+        import json as json_mod
+
+        suffix = f"\n[dim]... and {total - len(tasks)} more[/dim]" if total > len(tasks) else ""
+
+        if fmt == "json":
+            items = []
+            for t in tasks:
+                item: dict[str, Any] = {}
+                if not included or "Title" in included:
+                    item["title"] = t.title
+                if (not included or "Score" in included) and t.score is not None:
+                    item["score"] = t.score
+                if (not included or "Max Score" in included) and t.max_score is not None:
+                    item["max_score"] = t.max_score
+                if (not included or "Status" in included) and t.status:
+                    item["status"] = t.status
+                if (not included or "Deadline" in included) and t.deadline:
+                    item["deadline"] = t.deadline.strftime("%Y-%m-%d %H:%M")
+                if (not included or "Section" in included) and t.section:
+                    item["section"] = t.section
+                if (not included or "Description" in included) and t.description:
+                    item["description"] = strip_html(t.description)[:100]
+                items.append(item)
+            preview = json_mod.dumps(
+                {"course_id": course_id, "tasks": items},
+                indent=2,
+                ensure_ascii=False,
+            )
+            return f"[bold]course_{course_id}.json[/bold]\n{preview}{suffix}"
+
+        elif fmt == "csv":
+            header_parts = []
+            if not included or "#" in included:
+                header_parts.append("#")
+            if not included or "Title" in included:
+                header_parts.append("Title")
+            if self.is_teacher_view:
+                if not included or "Section" in included:
+                    header_parts.append("Section")
+                if not included or "Max Score" in included:
+                    header_parts.append("Max Score")
+            else:
+                if not included or "Score" in included:
+                    header_parts.append("Score")
+                if not included or "Status" in included:
+                    header_parts.append("Status")
+            if not included or "Deadline" in included:
+                header_parts.append("Deadline")
+            lines = [",".join(header_parts)]
+            for i, t in enumerate(tasks, 1):
+                row_parts = []
+                if not included or "#" in included:
+                    row_parts.append(str(i))
+                if not included or "Title" in included:
+                    row_parts.append(t.title)
+                if self.is_teacher_view:
+                    if not included or "Section" in included:
+                        row_parts.append(t.section or "-")
+                    if not included or "Max Score" in included:
+                        row_parts.append(str(t.max_score) if t.max_score is not None else "-")
+                else:
+                    if not included or "Score" in included:
+                        score = f"{t.score}/{t.max_score}" if t.score is not None else "-"
+                        row_parts.append(score)
+                    if not included or "Status" in included:
+                        row_parts.append(t.status or "-")
+                if not included or "Deadline" in included:
+                    dl = t.deadline.strftime("%d.%m.%Y") if t.deadline else "-"
+                    row_parts.append(dl)
+                lines.append(",".join(row_parts))
+            return f"[bold]course_{course_id}.csv[/bold]\n" + "\n".join(lines) + suffix
+
+        elif fmt == "markdown":
+            lines = [f"# Course {course_id}", ""]
+            for t in tasks:
+                if not included or "Title" in included:
+                    lines.append(f"## {t.title}")
+                if (not included or "Status" in included) and t.status:
+                    lines.append(f"Status: {t.status}")
+                if (not included or "Deadline" in included) and t.deadline:
+                    lines.append(f"Deadline: {t.deadline.strftime('%d.%m.%Y')}")
+                lines.append("")
+            return f"[bold]course_{course_id}.md[/bold]\n" + "\n".join(lines) + suffix
+
+        return "[dim]Select a format[/dim]"
+
+    def _preview_queue(
+        self, entries: list[QueueEntry], fmt: str, course_id: int, total: int, included: list[str]
+    ) -> str:
+        import json as json_mod
+
+        suffix = f"\n[dim]... and {total - len(entries)} more[/dim]" if total > len(entries) else ""
+
+        if fmt == "json":
+            items = []
+            for i, e in enumerate(entries, 1):
+                item: dict[str, Any] = {}
+                if not included or "#" in included:
+                    item["#"] = i
+                if not included or "Student" in included:
+                    item["student"] = e.student_name
+                if not included or "Task" in included:
+                    item["task"] = e.task_title
+                if not included or "Status" in included:
+                    item["status"] = e.status_name
+                if not included or "Reviewer" in included:
+                    item["reviewer"] = e.responsible_name
+                if not included or "Updated" in included:
+                    item["updated"] = e.update_time
+                if not included or "Grade" in included:
+                    item["grade"] = e.mark
+                items.append(item)
+            preview = json_mod.dumps(
+                {"course_id": course_id, "entries": items},
+                indent=2,
+                ensure_ascii=False,
+            )
+            return f"[bold]queue_{course_id}.json[/bold]\n{preview}{suffix}"
+
+        elif fmt == "csv":
+            header_parts = []
+            if not included or "#" in included:
+                header_parts.append("#")
+            if not included or "Student" in included:
+                header_parts.append("Student")
+            if not included or "Task" in included:
+                header_parts.append("Task")
+            if not included or "Status" in included:
+                header_parts.append("Status")
+            if not included or "Reviewer" in included:
+                header_parts.append("Reviewer")
+            if not included or "Updated" in included:
+                header_parts.append("Updated")
+            if not included or "Grade" in included:
+                header_parts.append("Grade")
+            lines = [",".join(header_parts)]
+            for i, e in enumerate(entries, 1):
+                row_parts = []
+                if not included or "#" in included:
+                    row_parts.append(str(i))
+                if not included or "Student" in included:
+                    row_parts.append(e.student_name)
+                if not included or "Task" in included:
+                    row_parts.append(e.task_title)
+                if not included or "Status" in included:
+                    row_parts.append(e.status_name)
+                if not included or "Reviewer" in included:
+                    row_parts.append(e.responsible_name)
+                if not included or "Updated" in included:
+                    row_parts.append(e.update_time)
+                if not included or "Grade" in included:
+                    row_parts.append(e.mark)
+                lines.append(",".join(row_parts))
+            return f"[bold]queue_{course_id}.csv[/bold]\n" + "\n".join(lines) + suffix
+
+        elif fmt == "markdown":
+            lines = [f"# Queue - Course {course_id}", ""]
+            for e in entries:
+                parts = []
+                if not included or "Student" in included:
+                    parts.append(f"**{e.student_name}**")
+                if not included or "Task" in included:
+                    parts.append(e.task_title)
+                if not included or "Status" in included:
+                    parts.append(f"[{e.status_name}]")
+                lines.append(f"- {' — '.join(parts)}")
+            return f"[bold]queue_{course_id}.md[/bold]\n" + "\n".join(lines) + suffix
+
+        return "[dim]Select a format[/dim]"
+
+    def _preview_submissions(
+        self,
+        entries: list[QueueEntry],
+        fmt: str,
+        course_id: int,
+        total: int,
+        included: list[str],
+    ) -> str:
+        import json as json_mod
+
+        suffix = f"\n[dim]... and {total - len(entries)} more[/dim]" if total > len(entries) else ""
+
+        if fmt == "json":
+            items = []
+            for e in entries:
+                item: dict[str, Any] = {}
+                if not included or "Issue ID" in included:
+                    item["issue_id"] = "-"
+                if not included or "Task" in included:
+                    item["task"] = e.task_title
+                if not included or "Student" in included:
+                    item["student"] = e.student_name
+                if not included or "Reviewer" in included:
+                    item["reviewer"] = e.responsible_name
+                if not included or "Status" in included:
+                    item["status"] = e.status_name
+                if not included or "Grade" in included:
+                    item["grade"] = e.mark
+                if not included or "Max Score" in included:
+                    item["max_score"] = "-"
+                if not included or "Deadline" in included:
+                    item["deadline"] = "-"
+                if not included or "Comments" in included:
+                    item["comments"] = 0
+                items.append(item)
+            preview = json_mod.dumps(
+                {"course_id": course_id, "submissions": items},
+                indent=2,
+                ensure_ascii=False,
+            )
+            return f"[bold]submissions_{course_id}.json[/bold]\n{preview}{suffix}"
+
+        elif fmt == "csv":
+            header_parts = []
+            if not included or "Issue ID" in included:
+                header_parts.append("Issue ID")
+            if not included or "Task" in included:
+                header_parts.append("Task")
+            if not included or "Student" in included:
+                header_parts.append("Student")
+            if not included or "Reviewer" in included:
+                header_parts.append("Reviewer")
+            if not included or "Status" in included:
+                header_parts.append("Status")
+            if not included or "Grade" in included:
+                header_parts.append("Grade")
+            if not included or "Max Score" in included:
+                header_parts.append("Max Score")
+            if not included or "Deadline" in included:
+                header_parts.append("Deadline")
+            if not included or "Comments" in included:
+                header_parts.append("Comments")
+            lines = [",".join(header_parts)]
+            for e in entries:
+                row_parts = []
+                if not included or "Issue ID" in included:
+                    row_parts.append("-")
+                if not included or "Task" in included:
+                    row_parts.append(e.task_title)
+                if not included or "Student" in included:
+                    row_parts.append(e.student_name)
+                if not included or "Reviewer" in included:
+                    row_parts.append(e.responsible_name)
+                if not included or "Status" in included:
+                    row_parts.append(e.status_name)
+                if not included or "Grade" in included:
+                    row_parts.append(e.mark)
+                if not included or "Max Score" in included:
+                    row_parts.append("-")
+                if not included or "Deadline" in included:
+                    row_parts.append("-")
+                if not included or "Comments" in included:
+                    row_parts.append("0")
+                lines.append(",".join(row_parts))
+            return f"[bold]submissions_{course_id}.csv[/bold]\n" + "\n".join(lines) + suffix
+
+        elif fmt == "markdown":
+            lines = [f"# Submissions - Course {course_id}", ""]
+            for e in entries:
+                parts = []
+                if not included or "Student" in included:
+                    parts.append(f"**{e.student_name}**")
+                if not included or "Task" in included:
+                    parts.append(e.task_title)
+                if not included or "Status" in included:
+                    parts.append(f"[{e.status_name}]")
+                if not included or "Grade" in included:
+                    parts.append(f"Grade: {e.mark}")
+                lines.append(f"- {' — '.join(parts)}")
+            return f"[bold]submissions_{course_id}.md[/bold]\n" + "\n".join(lines) + suffix
+
+        elif fmt == "files":
+            return "[dim]Files Only mode:\nDownloads submission files\nto student folders[/dim]"
+
+        return "[dim]Select a format[/dim]"
+
+    def _preview_gradebook(
+        self,
+        groups: list[GradebookGroup],
+        fmt: str,
+        course_id: int,
+        total: int,
+        included: list[str],
+    ) -> str:
+        import json as json_mod
+
+        all_tasks: list[str] = []
+        for g in groups:
+            for t in g.task_titles:
+                if t not in all_tasks:
+                    all_tasks.append(t)
+
+        if fmt == "json":
+            items = []
+            count = 0
+            for g in groups:
+                for e in g.entries[:2]:
+                    entry_dict: dict[str, Any] = {}
+                    if not included or "Group" in included:
+                        entry_dict["group"] = g.group_name
+                    if not included or "Student" in included:
+                        entry_dict["student"] = e.student_name
+                    for t in all_tasks:
+                        if not included or t in included:
+                            entry_dict[t] = e.scores.get(t, None)
+                    if not included or "Total" in included:
+                        entry_dict["total"] = e.total_score
+                    items.append(entry_dict)
+                    count += 1
+                    if count >= 2:
+                        break
+                if count >= 2:
+                    break
+            suffix = f"\n[dim]... and {total - count} more[/dim]" if total > count else ""
+            preview = json_mod.dumps(
+                {"course_id": course_id, "entries": items},
+                indent=2,
+                ensure_ascii=False,
+            )
+            return f"[bold]gradebook_{course_id}.json[/bold]\n{preview}{suffix}"
+
+        elif fmt == "csv":
+            header_parts = []
+            if not included or "Group" in included:
+                header_parts.append("Group")
+            if not included or "Student" in included:
+                header_parts.append("Student")
+            for t in all_tasks:
+                if not included or t in included:
+                    header_parts.append(t)
+            if not included or "Total" in included:
+                header_parts.append("Total")
+            lines = [",".join(header_parts)]
+            count = 0
+            for g in groups:
+                for e in g.entries[:2]:
+                    row_parts = []
+                    if not included or "Group" in included:
+                        row_parts.append(g.group_name)
+                    if not included or "Student" in included:
+                        row_parts.append(e.student_name)
+                    for t in all_tasks:
+                        if not included or t in included:
+                            row_parts.append(str(e.scores.get(t, "")))
+                    if not included or "Total" in included:
+                        row_parts.append(str(e.total_score))
+                    lines.append(",".join(row_parts))
+                    count += 1
+                    if count >= 2:
+                        break
+                if count >= 2:
+                    break
+            suffix = f"\n[dim]... and {total - count} more[/dim]" if total > count else ""
+            return f"[bold]gradebook_{course_id}.csv[/bold]\n" + "\n".join(lines) + suffix
+
+        elif fmt == "markdown":
+            lines = [f"# Gradebook - Course {course_id}", ""]
+            count = 0
+            for g in groups:
+                lines.append(f"## {g.group_name}")
+                for e in g.entries[:2]:
+                    scores_str = ", ".join(
+                        f"{t}: {e.scores.get(t, '-')}"
+                        for t in g.task_titles[:3]
+                        if not included or t in included
+                    )
+                    if scores_str:
+                        lines.append(f"- {e.student_name}: {scores_str}, Total: {e.total_score}")
+                    else:
+                        lines.append(f"- {e.student_name}: Total {e.total_score}")
+                    count += 1
+                    if count >= 2:
+                        break
+                if count >= 2:
+                    break
+            suffix = f"\n[dim]... and {total - count} more[/dim]" if total > count else ""
+            return f"[bold]gradebook_{course_id}.md[/bold]\n" + "\n".join(lines) + suffix
+
+        return "[dim]Select a format[/dim]"
 
     @on(Button.Pressed, "#export-btn")
     def _handle_export(self) -> None:
@@ -1058,20 +1836,10 @@ class MainScreen(Screen[None]):
         type_btn = type_set.pressed_button
         export_type = type_btn.id if type_btn else "tasks-export-radio"
 
-        task_val = self.query_one("#export-filter-task", Select).value
-        status_val = self.query_one("#export-filter-status", Select).value
-        reviewer_val = self.query_one("#export-filter-reviewer", Select).value
-        filters = {
-            "task": "" if task_val is Select.BLANK else str(task_val),
-            "status": "" if status_val is Select.BLANK else str(status_val),
-            "reviewer": "" if reviewer_val is Select.BLANK else str(reviewer_val),
-        }
-
-        output_dir = (
-            self.query_one("#output-dir-input", Input).value.strip() or "./output"
-        )
+        output_dir = self.query_one("#output-dir-input", Input).value.strip() or "./output"
         output_path = Path(output_dir).expanduser().resolve()
 
+        filters = self._get_current_export_filters()
         self._set_export_status(f"Exporting to {output_path}...", "info")
         self._do_export(fmt, output_path, export_type or "tasks-export-radio", filters)
 
@@ -1091,8 +1859,8 @@ class MainScreen(Screen[None]):
     ) -> None:
         try:
             output_path.mkdir(parents=True, exist_ok=True)
-            filters = filters or {}
             course_id = self._selected_course_id or 0
+            columns = self._get_included_columns()
 
             if export_type == "tasks-export-radio":
                 course = self.app.current_course  # type: ignore[attr-defined]
@@ -1103,7 +1871,8 @@ class MainScreen(Screen[None]):
                     return
 
                 tasks = list(course.tasks)
-                if filters.get("status"):
+
+                if filters and filters.get("status"):
                     tasks = [t for t in tasks if t.status == filters["status"]]
 
                 filtered_course = Course(
@@ -1116,50 +1885,51 @@ class MainScreen(Screen[None]):
                 if fmt == "json":
                     saved = save_course_json(filtered_course, output_path)
                 elif fmt == "csv":
-                    saved = save_course_csv(filtered_course, output_path)
+                    saved = save_course_csv(filtered_course, output_path, columns=columns)
                 else:
                     saved = save_course_markdown(filtered_course, output_path)
 
             elif export_type == "queue-export-radio":
-                entries = list(self.all_queue_entries)
-                if filters.get("task"):
-                    entries = [e for e in entries if e.task_title == filters["task"]]
-                if filters.get("status"):
-                    entries = [e for e in entries if e.status_name == filters["status"]]
-                if filters.get("reviewer"):
-                    entries = [
-                        e for e in entries if e.responsible_name == filters["reviewer"]
-                    ]
+                queue = self._load_queue_for_export(course_id)
 
-                queue = ReviewQueue(course_id=course_id, entries=entries)
+                entries = list(queue.entries)
+                if filters:
+                    if filters.get("task"):
+                        entries = [e for e in entries if e.task_title == filters["task"]]
+                    if filters.get("status"):
+                        entries = [e for e in entries if e.status_name == filters["status"]]
+                    if filters.get("reviewer"):
+                        entries = [e for e in entries if e.responsible_name == filters["reviewer"]]
+
+                filtered_queue = ReviewQueue(
+                    course_id=queue.course_id,
+                    entries=entries,
+                )
 
                 if fmt == "json":
-                    saved = save_queue_json(queue, output_path)
+                    saved = save_queue_json(filtered_queue, output_path)
                 elif fmt == "csv":
-                    saved = save_queue_csv(queue, output_path)
+                    saved = save_queue_csv(filtered_queue, output_path, columns=columns)
                 else:
-                    saved = save_queue_markdown(queue, output_path)
+                    saved = save_queue_markdown(filtered_queue, output_path)
 
             elif export_type == "subs-export-radio":
-                # Filter queue entries first
-                entries = list(self.all_queue_entries)
-                if filters.get("task"):
-                    entries = [e for e in entries if e.task_title == filters["task"]]
-                if filters.get("status"):
-                    entries = [e for e in entries if e.status_name == filters["status"]]
-                if filters.get("reviewer"):
-                    entries = [
-                        e for e in entries if e.responsible_name == filters["reviewer"]
-                    ]
+                queue = self._load_queue_for_export(course_id)
+                entries = list(queue.entries)
 
-                # Only entries with issue access can be fetched
-                accessible_entries = [
-                    e for e in entries if e.has_issue_access and e.issue_url
-                ]
+                if filters:
+                    if filters.get("task"):
+                        entries = [e for e in entries if e.task_title == filters["task"]]
+                    if filters.get("status"):
+                        entries = [e for e in entries if e.status_name == filters["status"]]
+                    if filters.get("reviewer"):
+                        entries = [e for e in entries if e.responsible_name == filters["reviewer"]]
+
+                accessible_entries = [e for e in entries if e.has_issue_access and e.issue_url]
                 if not accessible_entries:
                     self.app.call_from_thread(
                         self._set_export_status,
-                        "No accessible submissions found matching filters.",
+                        "No accessible submissions found.",
                         "error",
                     )
                     return
@@ -1173,7 +1943,6 @@ class MainScreen(Screen[None]):
                     )
                     return
 
-                # Fetch all submissions
                 subs: list[Submission] = []
                 total = len(accessible_entries)
                 for i, entry in enumerate(accessible_entries, 1):
@@ -1200,7 +1969,6 @@ class MainScreen(Screen[None]):
                     )
                     return
 
-                # Download files to student folders
                 self.app.call_from_thread(
                     self._set_export_status,
                     f"Downloading files for {len(subs)} submissions...",
@@ -1211,9 +1979,7 @@ class MainScreen(Screen[None]):
                     downloaded = download_submission_files(client, sub, output_path)
                     total_files += len(downloaded)
 
-                # Save in requested format (or skip if files-only)
                 if fmt == "files":
-                    # Files-only: just download files, no JSON/MD/CSV output
                     self.app.call_from_thread(
                         self._set_export_status,
                         f"Downloaded {total_files} files to {output_path}",
@@ -1242,16 +2008,36 @@ class MainScreen(Screen[None]):
                     )
                     saved = save_queue_markdown(queue, output_path)
 
+                saved_label = saved.name if hasattr(saved, "name") else saved
                 self.app.call_from_thread(
                     self._set_export_status,
-                    f"Saved: {saved.name if hasattr(saved, 'name') else saved} ({total_files} files downloaded)",
+                    f"Saved: {saved_label} ({total_files} files downloaded)",
                     "success",
                 )
                 return
-            else:
-                self.app.call_from_thread(
-                    self._set_export_status, "Unknown export type", "error"
+            elif export_type == "gb-export-radio":
+                gradebook = self._load_gradebook_for_export(course_id)
+
+                groups = list(gradebook.groups)
+                if filters:
+                    if filters.get("task"):
+                        groups = [g for g in groups if g.group_name == filters["task"]]
+                    if filters.get("reviewer"):
+                        groups = [g for g in groups if g.teacher_name == filters["reviewer"]]
+
+                filtered_gradebook = Gradebook(
+                    course_id=gradebook.course_id,
+                    groups=groups,
                 )
+
+                if fmt == "json":
+                    saved = save_gradebook_json(filtered_gradebook, output_path)
+                elif fmt == "csv":
+                    saved = save_gradebook_csv(filtered_gradebook, output_path, columns=columns)
+                else:
+                    saved = save_gradebook_markdown(filtered_gradebook, output_path)
+            else:
+                self.app.call_from_thread(self._set_export_status, "Unknown export type", "error")
                 return
 
             self.app.call_from_thread(
@@ -1266,7 +2052,83 @@ class MainScreen(Screen[None]):
                 "error",
             )
 
-    #  Data fetching
+    def _load_queue_for_export(self, course_id: int) -> ReviewQueue:
+        """Load queue data for export without requiring Queue tab activation."""
+        cache = self.app.queue_cache  # type: ignore[attr-defined]
+        cached = cast(ReviewQueue | None, cache.get(course_id))
+        if cached is not None:
+            self.all_queue_entries = list(cached.entries)
+            self.filtered_queue_entries = list(cached.entries)
+            self._queue_loaded_for = course_id
+            self.app.call_from_thread(self._update_queue_info, f"{len(cached.entries)} entries")
+            return cached
+
+        client = self.app.client  # type: ignore[attr-defined]
+        if not client:
+            raise RuntimeError("Not logged in")
+
+        queue_html = client.fetch_queue_page(course_id)
+        csrf = extract_csrf_from_queue_page(queue_html)
+        raw = client.fetch_all_queue_entries(course_id, csrf)
+        entries = [
+            QueueEntry(
+                student_name=str(r.get("student_name", "")),
+                student_url=str(r.get("student_url", "")),
+                task_title=str(r.get("task_title", "")),
+                update_time=str(r.get("update_time", "")),
+                mark=str(r.get("mark", "")),
+                status_color=str(r.get("status_color", "default")),
+                status_name=str(r.get("status_name", "")),
+                responsible_name=str(r.get("responsible_name", "")),
+                responsible_url=str(r.get("responsible_url", "")),
+                has_issue_access=bool(r.get("has_issue_access", False)),
+                issue_url=str(r.get("issue_url", "")),
+            )
+            for r in raw
+        ]
+        queue = ReviewQueue(course_id=course_id, entries=entries)
+        cache[course_id] = queue
+        self.all_queue_entries = entries
+        self.filtered_queue_entries = list(entries)
+        self._queue_loaded_for = course_id
+        self.app.call_from_thread(self._update_queue_filter_options)
+        self.app.call_from_thread(self._rebuild_queue_table)
+        self.app.call_from_thread(self._update_queue_info, f"{len(entries)} entries")
+        return queue
+
+    def _load_gradebook_for_export(self, course_id: int) -> Gradebook:
+        """Load gradebook data for export without requiring Gradebook tab activation."""
+        cache = self.app.gradebook_cache  # type: ignore[attr-defined]
+        cached = cast(Gradebook | None, cache.get(course_id))
+        if cached is not None:
+            self.all_gradebook_groups = list(cached.groups)
+            self.filtered_gradebook_groups = list(cached.groups)
+            self._gradebook_loaded_for = course_id
+            total = sum(len(g.entries) for g in cached.groups)
+            self.app.call_from_thread(
+                self._update_gradebook_info,
+                f"{len(cached.groups)} group(s), {total} students",
+            )
+            return cached
+
+        client = self.app.client  # type: ignore[attr-defined]
+        if not client:
+            raise RuntimeError("Not logged in")
+
+        html = client.fetch_gradebook_page(course_id)
+        gradebook = parse_gradebook_page(html, course_id)
+        cache[course_id] = gradebook
+        self.all_gradebook_groups = list(gradebook.groups)
+        self.filtered_gradebook_groups = list(gradebook.groups)
+        self._gradebook_loaded_for = course_id
+        self.app.call_from_thread(self._update_gb_filter_options)
+        self.app.call_from_thread(self._rebuild_gradebook_table, gradebook.groups)
+        total = sum(len(g.entries) for g in gradebook.groups)
+        self.app.call_from_thread(
+            self._update_gradebook_info,
+            f"{len(gradebook.groups)} group(s), {total} students",
+        )
+        return gradebook
 
     @work(thread=True)
     def _fetch_course(self, course_id: int) -> None:
@@ -1318,8 +2180,6 @@ class MainScreen(Screen[None]):
         title = course.title or f"Course {course.course_id}"
         option_list.add_option(Option(title, id=str(course.course_id)))
 
-    #  Queue fetching
-
     def _maybe_load_queue(self) -> None:
         self._enable_queue_tab()
         if self._selected_course_id is None:
@@ -1340,9 +2200,7 @@ class MainScreen(Screen[None]):
             self._queue_loaded_for = self._selected_course_id
             self._update_queue_filter_options()
             self._rebuild_queue_table()
-            self.query_one("#queue-info-label", Label).update(
-                f"{len(queue.entries)} entries"
-            )
+            self.query_one("#queue-info-label", Label).update(f"{len(queue.entries)} entries")
             return
 
         self.query_one("#queue-info-label", Label).update("Loading queue...")
@@ -1386,15 +2244,11 @@ class MainScreen(Screen[None]):
 
             self.app.call_from_thread(self._update_queue_filter_options)
             self.app.call_from_thread(self._rebuild_queue_table)
-            self.app.call_from_thread(
-                self._update_queue_info, f"{len(entries)} entries"
-            )
+            self.app.call_from_thread(self._update_queue_info, f"{len(entries)} entries")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 403:
                 self.app.call_from_thread(self._disable_queue_tab)
-                self.app.call_from_thread(
-                    self._update_queue_info, "No permission to view queue"
-                )
+                self.app.call_from_thread(self._update_queue_info, "No permission to view queue")
             else:
                 self.app.call_from_thread(
                     self._show_status,
@@ -1474,8 +2328,6 @@ class MainScreen(Screen[None]):
 
         self.app.push_screen(SubmissionScreen(sub))
 
-    #  Task table helpers
-
     def _setup_task_table_columns(self) -> None:
         table = self.query_one("#task-table", DataTable)
         table.clear(columns=True)
@@ -1510,13 +2362,10 @@ class MainScreen(Screen[None]):
                     key=str(idx),
                 )
 
-    #  Queue table helpers
-
     def _rebuild_queue_table(self) -> None:
         table = self.query_one("#queue-table", DataTable)
         table.clear(columns=True)
 
-        # Build column labels with sort indicators
         base_columns = (
             "#",
             "Student",
@@ -1547,8 +2396,6 @@ class MainScreen(Screen[None]):
                 entry.mark,
                 key=entry.issue_url or str(idx),
             )
-
-    #  Detail panel (tasks)
 
     def _clear_detail(self) -> None:
         scroll = self.query_one("#detail-scroll", VerticalScroll)
@@ -1594,3 +2441,242 @@ class MainScreen(Screen[None]):
         if task.description:
             desc = strip_html(task.description)
             scroll.mount(Label(desc, classes="detail-text"))
+
+    _GRADEBOOK_COLOR_MAP: dict[str, str] = {
+        "#65E31B": "bold green",
+        "#F0AD4E": "bold yellow",
+        "#818A91": "dim",
+        "#D9534F": "bold red",
+        "#5BC0DE": "bold cyan",
+    }
+
+    def _maybe_load_gradebook(self) -> None:
+        if self._selected_course_id is None:
+            return
+        if self._gradebook_loaded_for == self._selected_course_id:
+            return
+
+        cache = self.app.gradebook_cache  # type: ignore[attr-defined]
+        if self._selected_course_id in cache:
+            gradebook = cache[self._selected_course_id]
+            self._gradebook_loaded_for = self._selected_course_id
+            self.all_gradebook_groups = list(gradebook.groups)
+            self.filtered_gradebook_groups = list(gradebook.groups)
+            self._update_gb_filter_options()
+            self._rebuild_gradebook_table(gradebook.groups)
+            total = sum(len(g.entries) for g in gradebook.groups)
+            self.query_one("#gradebook-info-label", Label).update(
+                f"{len(gradebook.groups)} group(s), {total} students"
+            )
+            return
+
+        self.query_one("#gradebook-info-label", Label).update("Loading gradebook...")
+        self._fetch_gradebook(self._selected_course_id)
+
+    @work(thread=True)
+    def _fetch_gradebook(self, course_id: int) -> None:
+        try:
+            client = self.app.client  # type: ignore[attr-defined]
+            if not client:
+                self.app.call_from_thread(self._show_status, "No client", kind="error")
+                return
+
+            html = client.fetch_gradebook_page(course_id)
+            gradebook = parse_gradebook_page(html, course_id)
+
+            self.app.gradebook_cache[course_id] = gradebook  # type: ignore[attr-defined]
+            self._gradebook_loaded_for = course_id
+            self.all_gradebook_groups = list(gradebook.groups)
+            self.filtered_gradebook_groups = list(gradebook.groups)
+
+            self.app.call_from_thread(self._update_gb_filter_options)
+            self.app.call_from_thread(self._rebuild_gradebook_table, gradebook.groups)
+            total = sum(len(g.entries) for g in gradebook.groups)
+            self.app.call_from_thread(
+                self._update_gradebook_info,
+                f"{len(gradebook.groups)} group(s), {total} students",
+            )
+        except httpx.HTTPStatusError as e:
+            self.app.call_from_thread(
+                self._show_status,
+                f"Gradebook error: HTTP {e.response.status_code}",
+                kind="error",
+            )
+            self.app.call_from_thread(
+                self._update_gradebook_info,
+                f"Error: HTTP {e.response.status_code}",
+            )
+        except Exception as e:
+            self.app.call_from_thread(
+                self._show_status,
+                f"Gradebook error: {e}",
+                kind="error",
+            )
+            self.app.call_from_thread(self._update_gradebook_info, f"Error: {e}")
+
+    @on(GradebookFilterBar.Changed)
+    def _handle_gb_filter(self, event: GradebookFilterBar.Changed) -> None:
+        needle = event.text.lower()
+        filtered: list[GradebookGroup] = []
+        for g in self.all_gradebook_groups:
+            if event.group and event.group != g.group_name:
+                continue
+            if event.teacher and event.teacher != g.teacher_name:
+                continue
+            if needle:
+                entries = [e for e in g.entries if needle in e.student_name.lower()]
+            else:
+                entries = list(g.entries)
+            if entries or (not needle):
+                filtered.append(
+                    GradebookGroup(
+                        group_name=g.group_name,
+                        group_id=g.group_id,
+                        teacher_name=g.teacher_name,
+                        task_titles=list(g.task_titles),
+                        max_scores=dict(g.max_scores),
+                        entries=entries,
+                    )
+                )
+        self.filtered_gradebook_groups = filtered
+        if self._gb_sort_column is not None:
+            self._sort_and_rebuild_gradebook()
+        else:
+            self._rebuild_gradebook_table(filtered)
+        total = sum(len(g.entries) for g in filtered)
+        self.query_one("#gradebook-info-label", Label).update(
+            f"{len(filtered)} group(s), {total} students"
+        )
+
+    def _update_gb_filter_options(self) -> None:
+        groups = sorted({g.group_name for g in self.all_gradebook_groups if g.group_name})
+        teachers = sorted({g.teacher_name for g in self.all_gradebook_groups if g.teacher_name})
+        self.query_one("#gb-filter-bar", GradebookFilterBar).update_options(groups, teachers)
+
+    def _rebuild_gradebook_table(self, groups: list[GradebookGroup]) -> None:
+        table = self.query_one("#gradebook-table", DataTable)
+        table.clear(columns=True)
+
+        if not groups:
+            table.add_column("Info")
+            table.add_row("No gradebook data")
+            return
+
+        all_tasks: list[str] = []
+        for g in groups:
+            for t in g.task_titles:
+                if t not in all_tasks:
+                    all_tasks.append(t)
+        self._gb_all_tasks = all_tasks
+
+        base_columns = ["#", "Group", "Student", "Teacher"] + all_tasks + ["Total"]
+        labels = []
+        for i, col in enumerate(base_columns):
+            if self._gb_sort_column == i:
+                indicator = " ▼" if self._gb_sort_reverse else " ▲"
+                labels.append(f"{col}{indicator}")
+            else:
+                labels.append(f"{col}  ")  # Placeholder for " arrow"
+        table.add_columns(*labels)
+
+        row_num = 0
+        for group in groups:
+            for entry in group.entries:
+                row_num += 1
+                row: list[str | Text] = [
+                    str(row_num),
+                    group.group_name,
+                    entry.student_name,
+                    group.teacher_name,
+                ]
+                for t in all_tasks:
+                    score = entry.scores.get(t)
+                    color_hex = entry.statuses.get(t, "")
+                    style = self._GRADEBOOK_COLOR_MAP.get(color_hex, "")
+                    score_str = str(score) if score is not None else "-"
+                    row.append(Text(score_str, style=style))
+                row.append(str(entry.total_score))
+                table.add_row(*row, key=str(row_num))
+
+    @on(DataTable.HeaderSelected, "#gradebook-table")
+    def _gb_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        col_idx = event.column_index
+        if col_idx == 0:
+            return  # # column, not sortable
+        if self._gb_sort_column == col_idx:
+            self._gb_sort_reverse = not self._gb_sort_reverse
+        else:
+            self._gb_sort_column = col_idx
+            self._gb_sort_reverse = False
+        self._sort_and_rebuild_gradebook()
+
+    def _sort_and_rebuild_gradebook(self) -> None:
+        col = self._gb_sort_column
+        if col is None:
+            return
+
+        flat: list[tuple[GradebookGroup, GradebookEntry]] = []
+        for g in self.filtered_gradebook_groups:
+            for e in g.entries:
+                flat.append((g, e))
+
+        all_tasks: list[str] = []
+        for g in self.filtered_gradebook_groups:
+            for t in g.task_titles:
+                if t not in all_tasks:
+                    all_tasks.append(t)
+        self._gb_all_tasks = all_tasks
+
+        num_fixed = 4  # #, Group, Student, Teacher
+        total_col = num_fixed + len(all_tasks)  # Total column index
+
+        if col == 1:  # Group
+            flat.sort(key=lambda x: x[0].group_name.lower(), reverse=self._gb_sort_reverse)
+        elif col == 2:  # Student
+            flat.sort(key=lambda x: x[1].student_name.lower(), reverse=self._gb_sort_reverse)
+        elif col == 3:  # Teacher
+            flat.sort(key=lambda x: x[0].teacher_name.lower(), reverse=self._gb_sort_reverse)
+        elif col == total_col:  # Total
+            flat.sort(key=lambda x: x[1].total_score, reverse=self._gb_sort_reverse)
+        elif num_fixed <= col < total_col:  # Task score column
+            task_name = all_tasks[col - num_fixed]
+
+            def _task_score(item: tuple[GradebookGroup, GradebookEntry]) -> float:
+                return item[1].scores.get(task_name, -1.0)
+
+            flat.sort(
+                key=_task_score,
+                reverse=self._gb_sort_reverse,
+            )
+
+        table = self.query_one("#gradebook-table", DataTable)
+        table.clear(columns=True)
+
+        base_columns = ["#", "Group", "Student", "Teacher"] + all_tasks + ["Total"]
+        labels = []
+        for i, col_name in enumerate(base_columns):
+            if self._gb_sort_column == i:
+                indicator = " ▼" if self._gb_sort_reverse else " ▲"
+                labels.append(f"{col_name}{indicator}")
+            else:
+                labels.append(f"{col_name}  ")
+        table.add_columns(*labels)
+
+        for row_num, (group, entry) in enumerate(flat, 1):
+            row: list[str | Text] = [
+                str(row_num),
+                group.group_name,
+                entry.student_name,
+                group.teacher_name,
+            ]
+            for t in all_tasks:
+                score = entry.scores.get(t)
+                color_hex = entry.statuses.get(t, "")
+                style = self._GRADEBOOK_COLOR_MAP.get(color_hex, "")
+                score_str = str(score) if score is not None else "-"
+                row.append(Text(score_str, style=style))
+            row.append(str(entry.total_score))
+            table.add_row(*row, key=str(row_num))
+
+    def _update_gradebook_info(self, text: str) -> None:
+        self.query_one("#gradebook-info-label", Label).update(text)
