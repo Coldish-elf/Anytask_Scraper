@@ -28,6 +28,13 @@ pip install -e .
 anytask-scraper --help
 ```
 
+## Быстрый старт TUI
+```bash
+anytask-tui
+```
+
+TUI - экспериментальный интерфейс. В дальнейшем будет улучшаться и дополняться.  
+
 ## Быстрый старт CLI
 
 ### Рекомендуемый (через settings и default)
@@ -155,7 +162,7 @@ anytask-scraper [GLOBAL_OPTIONS] course -c COURSE_ID [COURSE_ID ...] [OPTIONS]
 
 ```bash
 anytask-scraper course -c course_id
-anytask-scraper course -c course_id 1001 -f markdown -o ./reports
+anytask-scraper course -c course_id course_id2 -f markdown -o ./reports
 anytask-scraper course -c course_id -f table
 anytask-scraper course -c course_id --fetch-descriptions --show
 ```

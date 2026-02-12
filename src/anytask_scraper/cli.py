@@ -11,20 +11,32 @@ from typing import Any
 from rich.console import Console
 
 from anytask_scraper.client import AnytaskClient, LoginError
-from anytask_scraper.display import display_course, display_queue, display_submission
+from anytask_scraper.display import (
+    display_course,
+    display_gradebook,
+    display_queue,
+    display_submission,
+)
 from anytask_scraper.models import QueueEntry, ReviewQueue
 from anytask_scraper.parser import (
     extract_csrf_from_queue_page,
     extract_issue_id_from_breadcrumb,
     parse_course_page,
+    parse_gradebook_page,
     parse_submission_page,
 )
 from anytask_scraper.storage import (
     download_submission_files,
+    save_course_csv,
     save_course_json,
     save_course_markdown,
+    save_gradebook_csv,
+    save_gradebook_json,
+    save_gradebook_markdown,
+    save_queue_csv,
     save_queue_json,
     save_queue_markdown,
+    save_submissions_csv,
 )
 
 console = Console()
@@ -38,6 +50,7 @@ INIT_DEFAULTS: dict[str, Any] = {
     "default_output": "./output",
     "save_session": True,
     "refresh_session": False,
+    "auto_login_session": False,
 }
 SETTINGS_KEYS = (
     "credentials_file",
@@ -46,6 +59,7 @@ SETTINGS_KEYS = (
     "default_output",
     "save_session",
     "refresh_session",
+    "auto_login_session",
 )
 
 
@@ -91,6 +105,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    subparsers.add_parser("tui", help="Launch interactive TUI")
+
     course_p = subparsers.add_parser("course", help="Scrape course tasks")
     course_p.add_argument("--course", "-c", type=int, nargs="+", required=True, help="Course ID(s)")
     course_p.add_argument(
@@ -101,7 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
     course_p.add_argument(
         "--format",
         "-f",
-        choices=["json", "markdown", "table"],
+        choices=["json", "markdown", "csv", "table"],
         default="json",
         help="Output format (default: json). 'table' displays only, no file saved.",
     )
@@ -115,6 +131,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fetch task descriptions for teacher view (requires extra requests)",
     )
+    course_p.add_argument(
+        "--include-columns",
+        nargs="+",
+        default=None,
+        help="Only include these columns in export",
+    )
+    course_p.add_argument(
+        "--exclude-columns",
+        nargs="+",
+        default=None,
+        help="Exclude these columns from export",
+    )
 
     queue_p = subparsers.add_parser("queue", help="Scrape review queue")
     queue_p.add_argument("--course", "-c", type=int, required=True, help="Course ID")
@@ -126,7 +154,7 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_p.add_argument(
         "--format",
         "-f",
-        choices=["json", "markdown", "table"],
+        choices=["json", "markdown", "csv", "table"],
         default="json",
         help="Output format (default: json). 'table' displays only, no file saved.",
     )
@@ -148,6 +176,71 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_p.add_argument("--filter-task", help="Filter by task title (substring match)")
     queue_p.add_argument("--filter-reviewer", help="Filter by reviewer name (substring match)")
     queue_p.add_argument("--filter-status", help="Filter by status name (substring match)")
+    queue_p.add_argument(
+        "--include-columns",
+        nargs="+",
+        default=None,
+        help="Only include these columns in export",
+    )
+    queue_p.add_argument(
+        "--exclude-columns",
+        nargs="+",
+        default=None,
+        help="Exclude these columns from export",
+    )
+
+    gradebook_p = subparsers.add_parser("gradebook", help="Scrape gradebook")
+    gradebook_p.add_argument("--course", "-c", type=int, required=True, help="Course ID")
+    gradebook_p.add_argument(
+        "--output",
+        "-o",
+        help="Output directory (default: --default-output or '.')",
+    )
+    gradebook_p.add_argument(
+        "--format",
+        "-f",
+        choices=["json", "markdown", "csv", "table"],
+        default="json",
+        help="Output format (default: json). 'table' displays only, no file saved.",
+    )
+    gradebook_p.add_argument(
+        "--show",
+        action="store_true",
+        help="Print a rich table to terminal after saving",
+    )
+    gradebook_p.add_argument(
+        "--filter-group",
+        default="",
+        help="Filter by group name (substring, case-insensitive)",
+    )
+    gradebook_p.add_argument(
+        "--filter-student",
+        default="",
+        help="Filter by student name (substring, case-insensitive)",
+    )
+    gradebook_p.add_argument(
+        "--filter-teacher",
+        default="",
+        help="Filter by teacher name (exact match)",
+    )
+    gradebook_p.add_argument(
+        "--min-score",
+        type=float,
+        default=None,
+        help="Keep only students with total score >= this value",
+    )
+    gradebook_p.add_argument(
+        "--include-columns",
+        nargs="+",
+        default=None,
+        help="Only include these columns in export",
+    )
+    gradebook_p.add_argument(
+        "--exclude-columns",
+        nargs="+",
+        default=None,
+        help="Exclude these columns from export",
+    )
 
     settings_p = subparsers.add_parser("settings", help="Manage saved defaults")
     settings_sub = settings_p.add_subparsers(dest="settings_action", required=True)
@@ -169,6 +262,12 @@ def _build_parser() -> argparse.ArgumentParser:
     set_p.add_argument(
         "--refresh-session",
         dest="set_refresh_session",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    set_p.add_argument(
+        "--auto-login-session",
+        dest="set_auto_login_session",
         action=argparse.BooleanOptionalAction,
         default=None,
     )
@@ -335,6 +434,7 @@ def _run_settings(args: argparse.Namespace) -> None:
             "default_output": args.set_default_output,
             "save_session": args.set_save_session,
             "refresh_session": args.set_refresh_session,
+            "auto_login_session": args.set_auto_login_session,
         }
         changed = False
         for key, value in updates.items():
@@ -397,6 +497,23 @@ def _run_course(args: argparse.Namespace, client: AnytaskClient) -> None:
             )
         elif args.format == "markdown":
             path = save_course_markdown(course, output_dir)
+            _print_ok(
+                args,
+                f"Course {course_id} ([bold]{course.title}[/bold]): "
+                f"{len(course.tasks)} tasks -> {path}",
+            )
+        elif args.format == "csv":
+            columns = None
+            if args.include_columns:
+                columns = args.include_columns
+            elif args.exclude_columns:
+                has_sections = any(t.section for t in course.tasks)
+                if has_sections:
+                    all_cols = ["#", "Title", "Section", "Max Score", "Deadline"]
+                else:
+                    all_cols = ["#", "Title", "Score", "Status", "Deadline"]
+                columns = [c for c in all_cols if c not in args.exclude_columns]
+            path = save_course_csv(course, output_dir, columns=columns)
             _print_ok(
                 args,
                 f"Course {course_id} ([bold]{course.title}[/bold]): "
@@ -497,6 +614,18 @@ def _run_queue(args: argparse.Namespace, client: AnytaskClient) -> None:
     elif args.format == "markdown":
         path = save_queue_markdown(queue, output_dir)
         _print_ok(args, f"Saved -> {path}")
+    elif args.format == "csv":
+        columns = None
+        if args.include_columns:
+            columns = args.include_columns
+        elif args.exclude_columns:
+            all_cols = ["#", "Student", "Task", "Status", "Reviewer", "Updated", "Grade"]
+            columns = [c for c in all_cols if c not in args.exclude_columns]
+        path = save_queue_csv(queue, output_dir, columns=columns)
+        _print_ok(args, f"Saved -> {path}")
+        if queue.submissions:
+            sub_path = save_submissions_csv(queue.submissions, course_id, output_dir)
+            _print_ok(args, f"Saved submissions -> {sub_path}")
 
     if args.show and args.format != "table":
         display_queue(queue, console)
@@ -505,12 +634,69 @@ def _run_queue(args: argparse.Namespace, client: AnytaskClient) -> None:
                 display_submission(sub, console)
 
 
+def _run_gradebook(args: argparse.Namespace, client: AnytaskClient) -> None:
+    from anytask_scraper.models import filter_gradebook
+
+    course_id = args.course
+    output_dir = _resolve_output_dir(args)
+
+    with console.status(f"[bold blue]Fetching gradebook for course {course_id}..."):
+        html = client.fetch_gradebook_page(course_id)
+        gradebook = parse_gradebook_page(html, course_id)
+
+    gradebook = filter_gradebook(
+        gradebook,
+        group=args.filter_group,
+        teacher=args.filter_teacher,
+        student=args.filter_student,
+        min_score=args.min_score,
+    )
+
+    total_entries = sum(len(g.entries) for g in gradebook.groups)
+    _print_ok(
+        args,
+        f"Gradebook: {len(gradebook.groups)} group(s), {total_entries} students",
+    )
+
+    if args.format == "table":
+        display_gradebook(gradebook, console)
+    elif args.format == "json":
+        path = save_gradebook_json(gradebook, output_dir)
+        _print_ok(args, f"Saved -> {path}")
+    elif args.format == "markdown":
+        path = save_gradebook_markdown(gradebook, output_dir)
+        _print_ok(args, f"Saved -> {path}")
+    elif args.format == "csv":
+        columns = None
+        if args.include_columns:
+            columns = args.include_columns
+        elif args.exclude_columns:
+            all_cols = ["Group", "Student"]
+            for g in gradebook.groups:
+                for t in g.task_titles:
+                    if t not in all_cols:
+                        all_cols.append(t)
+            all_cols.append("Total")
+            columns = [c for c in all_cols if c not in args.exclude_columns]
+        path = save_gradebook_csv(gradebook, output_dir, columns=columns)
+        _print_ok(args, f"Saved -> {path}")
+
+    if args.show and args.format != "table":
+        display_gradebook(gradebook, console)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "settings":
         _run_settings(args)
+        return
+
+    if args.command == "tui":
+        from anytask_scraper.tui import run
+
+        run()
         return
 
     try:
@@ -541,6 +727,8 @@ def main(argv: list[str] | None = None) -> None:
 
             if args.command == "course":
                 _run_course(args, client)
+            elif args.command == "gradebook":
+                _run_gradebook(args, client)
             elif args.command == "queue":
                 _run_queue(args, client)
 

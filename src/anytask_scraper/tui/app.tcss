@@ -1,0 +1,545 @@
+DataTable > .datatable--header {
+    background: $surface;
+    color: $text-muted;
+    text-style: bold;
+}
+
+DataTable > .datatable--even-row {
+    background: $surface-darken-1;
+}
+
+DataTable > .datatable--cursor {
+    background: $primary-darken-3;
+    color: $text;
+}
+
+DataTable:focus > .datatable--cursor {
+    background: $primary-darken-2;
+    color: $accent;
+}
+
+OptionList > .option-list--option-highlighted {
+    background: $primary-darken-3;
+    color: $text;
+}
+
+OptionList:focus > .option-list--option-highlighted {
+    background: $primary-darken-2;
+    color: $accent;
+}
+
+Input:focus {
+    border: solid $accent;
+}
+
+Select {
+    height: 3;
+    margin: 0 1 0 0;
+}
+
+.error-text { color: $error; text-style: bold; }
+.success-text { color: $success; text-style: bold; }
+.muted-text { color: $text-muted; }
+.error { color: $error; }
+.success { color: $success; }
+.info { color: $text-muted; }
+
+LoginScreen {
+    align: center middle;
+}
+
+#login-box {
+    width: 50;
+    height: auto;
+    background: $surface;
+    border: round $primary;
+    padding: 1 2;
+}
+
+#login-title {
+    text-align: center;
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+}
+
+#login-box Button {
+    background: $surface-lighten-1;
+    border: solid $surface-lighten-2;
+}
+
+#login-box Button:focus {
+    background: $surface-lighten-1;
+    border: solid $primary-darken-1;
+    text-style: bold;
+}
+
+#login-box Button:hover {
+    background: $surface-lighten-2;
+}
+
+#login-box Input {
+    border: solid $surface-lighten-2;
+}
+
+.field {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.field-label {
+    color: $text-muted;
+    margin-bottom: 0;
+}
+
+#btn-row {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+}
+
+#btn-row Button {
+    width: 100%;
+    margin: 0 0 1 0;
+}
+
+#login-status {
+    text-align: center;
+    height: auto;
+    min-height: 1;
+}
+
+MainScreen {
+    layout: vertical;
+}
+
+#header {
+    dock: top;
+    height: 1;
+    background: $primary;
+    color: $text;
+    padding: 0 2;
+}
+
+#body {
+    height: 1fr;
+}
+
+
+#left-pane {
+    width: 24;
+    border-right: solid $surface-lighten-2;
+}
+
+#left-title {
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#course-list {
+    height: 1fr;
+}
+
+#course-add-bar {
+    height: auto;
+    display: none;
+    padding: 0 1;
+    background: $surface;
+}
+
+#course-add-bar.visible {
+    display: block;
+}
+
+#course-id-input {
+    width: 100%;
+}
+
+#right-pane {
+    width: 1fr;
+}
+
+#main-tabs {
+    height: 1fr;
+}
+
+#task-area {
+    height: 1fr;
+}
+
+#task-table {
+    height: 1fr;
+}
+
+#detail-pane {
+    height: 12;
+    border-top: solid $surface-lighten-2;
+    padding: 1 2;
+}
+
+#detail-scroll {
+    width: 100%;
+    height: 100%;
+}
+
+.detail-heading {
+    text-style: bold;
+    color: $accent;
+}
+
+.detail-text {
+    margin-bottom: 0;
+}
+
+.filter-bar {
+    height: auto;
+    padding: 0 1;
+    background: $surface;
+    layout: horizontal;
+}
+
+.filter-bar Input {
+    width: 1fr;
+}
+
+.filter-bar Select {
+    width: auto;
+    min-width: 16;
+    max-width: 24;
+}
+
+#queue-body {
+    height: 1fr;
+}
+
+#queue-table {
+    width: 1fr;
+    height: 100%;
+}
+
+#queue-detail-pane {
+    width: 40;
+    height: 100%;
+    border-left: solid $surface-lighten-2;
+    padding: 0 1;
+}
+
+#queue-detail-scroll {
+    width: 100%;
+    height: 100%;
+}
+
+#queue-info-label {
+    color: $text-muted;
+    height: 1;
+    padding: 0 1;
+    background: $surface;
+}
+
+.queue-unavailable {
+    text-align: center;
+    color: $text-muted;
+    margin-top: 5;
+    width: 100%;
+}
+
+#export-body {
+    width: 100%;
+    height: 1fr;
+}
+
+#export-controls {
+    width: 1fr;
+    min-width: 30;
+    max-width: 50;
+    padding: 1 2;
+    border-right: solid $surface-lighten-2;
+}
+
+#export-preview {
+    width: 1fr;
+    padding: 1 2;
+}
+
+#export-preview-title {
+    text-style: bold;
+    color: $text-muted;
+    height: 1;
+    margin-bottom: 1;
+}
+
+#export-preview-content {
+    width: 100%;
+    height: 1fr;
+    color: $text;
+}
+
+#param-option-list {
+    height: auto;
+    max-height: 16;
+}
+
+#param-option-list > .option-list--option {
+    height: auto;
+    padding: 0 1;
+}
+
+.export-section {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.export-section-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+.export-filter-label {
+    color: $text;
+    margin-top: 1;
+}
+
+.export-filter-desc {
+    color: $text-muted;
+    text-style: italic;
+    height: 1;
+}
+
+#export-filter-section Select {
+    width: 100%;
+    margin-top: 1;
+    color: $text;
+}
+
+#export-filter-section Select:disabled {
+    color: $text-disabled;
+    text-opacity: 50%;
+}
+
+#export-btn {
+    width: 100%;
+    margin-top: 1;
+}
+
+RadioSet {
+    width: 100%;
+    height: auto;
+}
+
+RadioSet:focus {
+    border: none;
+}
+
+/* Remove focus/background highlight from export RadioButtons */
+#export-controls RadioSet {
+    border: none;
+    padding: 0;
+}
+
+#export-controls RadioSet:focus {
+    border: none;
+    padding: 0;
+}
+
+#export-controls RadioButton {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    height: 1;
+    min-height: 1;
+}
+
+#export-controls RadioButton:focus {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+#export-controls RadioButton:hover {
+    background: transparent;
+}
+
+/* Clear selected/highlighted row states that can render as a square block */
+#export-controls RadioButton.-selected,
+#export-controls RadioButton.-highlight,
+#export-controls RadioButton.-active {
+    background: transparent;
+}
+
+/* Only style the toggle circle */
+#export-controls RadioSet RadioButton .toggle--button {
+    color: $surface-lighten-2;
+    background: transparent;
+}
+
+#export-controls RadioSet RadioButton.-on .toggle--button {
+    color: $accent;
+    background: transparent;
+}
+
+#export-controls RadioSet:focus RadioButton.-on .toggle--button {
+    color: $accent;
+    background: transparent;
+}
+
+/* Remove any focus ring/border on RadioButton */
+#export-controls RadioButton:focus > .toggle--button {
+    text-style: none;
+}
+
+/* Inactive label: muted color to match inactive toggle circle */
+#export-controls RadioButton .toggle--label {
+    background: transparent;
+    text-style: none;
+    color: $text-muted;
+}
+
+/* Active label: accent color to match active toggle circle */
+#export-controls RadioButton.-on .toggle--label {
+    background: transparent;
+    text-style: none;
+    color: $text;
+}
+
+/* Ensure focus/selected/highlight states don't add extra styling */
+#export-controls RadioButton:focus .toggle--label,
+#export-controls RadioButton.-selected .toggle--label,
+#export-controls RadioButton.-highlight .toggle--label,
+#export-controls RadioButton.-active .toggle--label {
+    background: transparent;
+    text-style: none;
+}
+
+RadioButton:disabled {
+    color: $text-disabled;
+    text-opacity: 50%;
+}
+
+RadioButton:disabled .toggle--label {
+    color: $text-disabled;
+    text-opacity: 50%;
+}
+
+RadioButton:disabled .toggle--button {
+    color: $text-disabled;
+    text-opacity: 50%;
+}
+
+#output-dir-input {
+    width: 100%;
+    margin-top: 1;
+}
+
+#export-status-label {
+    text-align: center;
+    margin-top: 1;
+    height: auto;
+    min-height: 1;
+}
+
+
+#help-panel {
+    dock: bottom;
+    height: 0;
+    display: none;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 2;
+    overflow: hidden;
+}
+
+#help-panel.visible {
+    display: block;
+    height: auto;
+}
+
+#key-bar {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+#status-line {
+    dock: bottom;
+    height: 1;
+    background: $surface-darken-1;
+    color: $text;
+    padding: 0 2;
+}
+
+SubmissionScreen {
+    layout: vertical;
+}
+
+#sub-header {
+    dock: top;
+    height: 1;
+    background: $primary;
+    color: $text;
+    padding: 0 2;
+    text-style: bold;
+}
+
+#sub-metadata {
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+}
+
+.meta-line {
+    height: auto;
+}
+
+#sub-scroll {
+    height: 1fr;
+    padding: 0 2;
+}
+
+.comment-card {
+    background: $surface-darken-1;
+    border-left: wide $primary;
+    padding: 1 2;
+    margin: 1 0;
+}
+
+.comment-card.-after-deadline {
+    border-left: wide $error;
+}
+
+.comment-header {
+    text-style: bold;
+}
+
+.comment-body {
+    margin-top: 1;
+}
+
+.comment-files {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+.comment-links {
+    color: $text-muted;
+}
+
+.no-comments {
+    text-align: center;
+    color: $text-muted;
+    margin-top: 3;
+}
+
+#sub-key-bar {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+}

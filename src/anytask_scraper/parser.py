@@ -12,6 +12,9 @@ from anytask_scraper.models import (
     Comment,
     Course,
     FileAttachment,
+    Gradebook,
+    GradebookEntry,
+    GradebookGroup,
     QueueFilters,
     Submission,
     Task,
@@ -486,3 +489,134 @@ def extract_issue_id_from_breadcrumb(html: str) -> int:
 def format_student_folder(name: str) -> str:
     """Convert student name to folder-safe format."""
     return name.strip().replace(" ", "_")
+
+
+_TABLE_ID_RE = re.compile(r"table_results_(\d+)")
+
+
+def parse_gradebook_page(html: str, course_id: int) -> Gradebook:
+    """Parse gradebook page into ``Gradebook``."""
+    soup = BeautifulSoup(html, "lxml")
+    gradebook = Gradebook(course_id=course_id)
+
+    for table in soup.find_all("table", class_="table-results"):
+        group = _parse_gradebook_table(table)
+        if group is not None:
+            gradebook.groups.append(group)
+
+    return gradebook
+
+
+def _parse_gradebook_table(table: Tag) -> GradebookGroup | None:
+    """Parse one gradebook table into a ``GradebookGroup``."""
+    table_id = str(table.get("id", ""))
+    m = _TABLE_ID_RE.search(table_id)
+    group_id = int(m.group(1)) if m else 0
+
+    card = table.find_parent("div", class_="card")
+    group_name = ""
+    teacher_name = ""
+    if card is not None:
+        title_link = card.find("h5", class_="card-title")
+        if title_link:
+            a_tag = title_link.find("a", class_="card-link")
+            if a_tag:
+                group_name = a_tag.get_text(strip=True)
+            teacher_a = title_link.find_all("a", class_="card-link")
+            if len(teacher_a) > 1:
+                teacher_name = teacher_a[-1].get_text(strip=True)
+
+    thead = table.find("thead")
+    if thead is None:
+        return None
+
+    task_titles: list[str] = []
+    max_scores: dict[str, float] = {}
+    header_row = thead.find("tr")
+    if header_row is None:
+        return None
+
+    ths = header_row.find_all("th")
+    for th in ths:
+        if "dom-number" not in (th.get("class") or []) or "word-wrap" not in (
+            th.get("class") or []
+        ):
+            continue
+        a_tag = th.find("a")
+        title = a_tag.get_text(strip=True) if a_tag else th.get_text(strip=True)
+        task_titles.append(title)
+        score_span = th.find("span", class_="label-inverse")
+        if score_span:
+            val = _parse_float(score_span.get_text(strip=True))
+            if val is not None:
+                max_scores[title] = val
+
+    tbody = table.find("tbody")
+    entries: list[GradebookEntry] = []
+    if tbody is not None:
+        for tr in tbody.find_all("tr", recursive=False):
+            entry = _parse_gradebook_row(tr, task_titles)
+            if entry is not None:
+                entries.append(entry)
+
+    return GradebookGroup(
+        group_name=group_name,
+        group_id=group_id,
+        teacher_name=teacher_name,
+        task_titles=task_titles,
+        max_scores=max_scores,
+        entries=entries,
+    )
+
+
+def _parse_gradebook_row(tr: Tag, task_titles: list[str]) -> GradebookEntry | None:
+    """Parse one student row from the gradebook."""
+    tds = tr.find_all("td", recursive=False)
+    if len(tds) < 3:
+        return None
+
+    student_td = tds[1]
+    student_link = student_td.find("a", class_="card-link")
+    if student_link is None:
+        return None
+    student_name = student_link.get_text(strip=True).replace("\xa0", " ")
+    student_url = str(student_link.get("href", ""))
+
+    scores: dict[str, float] = {}
+    statuses: dict[str, str] = {}
+    issue_urls: dict[str, str] = {}
+
+    score_tds = tds[2:]
+    for i, title in enumerate(task_titles):
+        if i >= len(score_tds):
+            break
+        td = score_tds[i]
+        span = td.find("span", class_="label")
+        if span:
+            val = _parse_float(span.get_text(strip=True))
+            scores[title] = val if val is not None else 0.0
+            style = str(span.get("style", ""))
+            color_m = re.search(r"background-color:\s*(#[0-9a-fA-F]+)", style)
+            if color_m:
+                statuses[title] = color_m.group(1)
+        a_tag = td.find("a", href=True)
+        if a_tag:
+            issue_urls[title] = str(a_tag["href"])
+
+    total_score = 0.0
+    sum_td = tr.find("td", class_="sum-score")
+    if sum_td:
+        sum_span = sum_td.find("span", class_="label")
+        if sum_span:
+            val = _parse_float(sum_span.get_text(strip=True))
+            if val is not None:
+                total_score = val
+
+    return GradebookEntry(
+        student_name=student_name,
+        student_url=student_url,
+        scores=scores,
+        statuses=statuses,
+        issue_urls=issue_urls,
+        total_score=total_score,
+    )
