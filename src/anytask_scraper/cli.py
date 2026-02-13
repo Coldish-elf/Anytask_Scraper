@@ -50,7 +50,7 @@ INIT_DEFAULTS: dict[str, Any] = {
     "default_output": "./output",
     "save_session": True,
     "refresh_session": False,
-    "auto_login_session": False,
+    "auto_login_session": True,
 }
 SETTINGS_KEYS = (
     "credentials_file",
@@ -350,6 +350,17 @@ def _save_settings(path: str, settings: dict[str, Any]) -> None:
     file_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _ensure_credentials_stub(path: str) -> bool:
+    """Create credentials file stub if it doesn't exist."""
+    file_path = Path(path)
+    if file_path.exists():
+        return False
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    stub = {"username": "your_username", "password": "your_password"}
+    file_path.write_text(json.dumps(stub, indent=2, ensure_ascii=False), encoding="utf-8")
+    return True
+
+
 def _merge_runtime_settings(args: argparse.Namespace, settings: dict[str, Any]) -> None:
     for key in SETTINGS_KEYS:
         current = getattr(args, key, None)
@@ -415,8 +426,17 @@ def _run_settings(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     if args.settings_action == "init":
-        _save_settings(args.settings_file, dict(INIT_DEFAULTS))
+        defaults = dict(INIT_DEFAULTS)
+        _save_settings(args.settings_file, defaults)
+        credentials_file = str(defaults.get("credentials_file", "./credentials.json"))
+        created = _ensure_credentials_stub(credentials_file)
         console.print(f"[green][OK][/green] Initialized settings -> {args.settings_file}")
+        if created:
+            console.print(f"[green][OK][/green] Created credentials stub -> {credentials_file}")
+        else:
+            console.print(
+                f"[blue][INFO][/blue] Credentials file already exists -> {credentials_file}"
+            )
         return
 
     if args.settings_action == "show":

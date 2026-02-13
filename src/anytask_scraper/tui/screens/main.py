@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -201,6 +202,7 @@ class MainScreen(Screen[None]):
         self._gb_sort_reverse = False
         self._gb_all_tasks: list[str] = []
         self._help_visible = False
+        self._export_preload_token = 0
 
     def compose(self) -> ComposeResult:
         client = getattr(self.app, "client", None)
@@ -547,17 +549,20 @@ class MainScreen(Screen[None]):
         prev_idx = (current - 1) % len(zones)
         self._focus_zone(zones[prev_idx])
 
-    def _find_current_zone(self, zones: list[str]) -> int:
+    def _find_current_zone(self, zones: list[Any]) -> int:
         focused = self.focused
         if focused is None:
             return -1
         for i, zone_id in enumerate(zones):
-            try:
-                widget = self.query_one(zone_id)
-                if widget is focused or focused in widget.walk_children():
-                    return i
-            except Exception:
-                continue
+            if isinstance(zone_id, str):
+                try:
+                    widget = self.query_one(zone_id)
+                except Exception:
+                    continue
+            else:
+                widget = zone_id
+            if widget is focused or focused in widget.walk_children():
+                return i
         return -1
 
     def _focus_zone(self, zone_id: str) -> None:
@@ -635,27 +640,39 @@ class MainScreen(Screen[None]):
     ]
 
     def _export_focus_next(self) -> None:
-        current = self._find_export_focus_index()
-        next_idx = min(current + 1, len(self._EXPORT_FOCUS_ORDER) - 1)
-        self.query_one(self._EXPORT_FOCUS_ORDER[next_idx]).focus()
+        order = self._get_export_focus_order()
+        if not order:
+            return
+        current = self._find_current_zone(order)
+        if current < 0:
+            order[0].focus()
+            return
+        next_idx = min(current + 1, len(order) - 1)
+        order[next_idx].focus()
 
     def _export_focus_prev(self) -> None:
-        current = self._find_export_focus_index()
+        order = self._get_export_focus_order()
+        if not order:
+            return
+        current = self._find_current_zone(order)
+        if current < 0:
+            order[0].focus()
+            return
         prev_idx = max(current - 1, 0)
-        self.query_one(self._EXPORT_FOCUS_ORDER[prev_idx]).focus()
+        order[prev_idx].focus()
 
-    def _find_export_focus_index(self) -> int:
-        focused = self.focused
-        if focused is None:
-            return 0
-        for i, wid in enumerate(self._EXPORT_FOCUS_ORDER):
+    def _get_export_focus_order(self) -> list[Any]:
+        """Return export focus targets with disabled fields omitted."""
+        widgets: list[Any] = []
+        for wid in self._EXPORT_FOCUS_ORDER:
             try:
                 widget = self.query_one(wid)
-                if widget is focused or focused in widget.walk_children():
-                    return i
             except Exception:
                 continue
-        return 0
+            if getattr(widget, "disabled", False):
+                continue
+            widgets.append(widget)
+        return widgets
 
     def action_filter_next(self) -> None:
         if isinstance(self.focused, Input):
@@ -874,9 +891,15 @@ class MainScreen(Screen[None]):
                 "Queue available for teacher courses only"
             )
 
-        self._update_export_filters()
-        self._update_params()
-        self._refresh_export_preview()
+        current_export_type = self._get_current_export_type()
+        if current_export_type == "tasks-export-radio":
+            self._update_export_filters()
+            self._update_params()
+            self._refresh_export_preview()
+        else:
+            self._set_export_filters_loading_state()
+            self._update_params()
+            self._refresh_export_preview()
 
         tabs = self.query_one("#main-tabs", TabbedContent)
         if tabs.active == "queue-tab":
@@ -884,7 +907,7 @@ class MainScreen(Screen[None]):
         elif tabs.active == "gradebook-tab":
             self._maybe_load_gradebook()
         elif tabs.active == "export-tab":
-            self._start_export_preload(self._get_current_export_type())
+            self._start_export_preload(current_export_type)
 
     @on(TaskFilterBar.Changed)
     def _handle_task_filter(self, event: TaskFilterBar.Changed) -> None:
@@ -1140,10 +1163,15 @@ class MainScreen(Screen[None]):
 
     @on(RadioSet.Changed, "#export-type-set")
     def _export_type_changed(self, event: RadioSet.Changed) -> None:
-        self._update_export_filters()
-        self._update_params()
-        self._start_export_preload(self._get_current_export_type())
-        self._refresh_export_preview()
+        export_type = self._get_current_export_type()
+        if export_type == "tasks-export-radio" or self._has_loaded_export_data(export_type):
+            self._update_export_filters()
+            self._update_params()
+            self._refresh_export_preview()
+        else:
+            self._set_export_filters_loading_state()
+            self._refresh_export_preview()
+            self._start_export_preload(export_type)
 
     @on(RadioSet.Changed, "#format-set")
     def _format_changed(self, event: RadioSet.Changed) -> None:
@@ -1167,13 +1195,27 @@ class MainScreen(Screen[None]):
             return
 
         export_type = self._get_current_export_type()
+        prev_task = task_select.value
+        prev_status = status_select.value
+        prev_reviewer = reviewer_select.value
 
-        task_select.value = Select.BLANK
-        status_select.value = Select.BLANK
-        reviewer_select.value = Select.BLANK
-        task_select.set_options([])
-        status_select.set_options([])
-        reviewer_select.set_options([])
+        # Dynamic filter names by export type for clarity.
+        if export_type in ("queue-export-radio", "subs-export-radio"):
+            task_select.prompt = "Task"
+            status_select.prompt = "Status"
+            reviewer_select.prompt = "Reviewer"
+        elif export_type == "tasks-export-radio":
+            task_select.prompt = "Title"
+            status_select.prompt = "Section" if self.is_teacher_view else "Status"
+            reviewer_select.prompt = "N/A"
+        elif export_type == "gb-export-radio":
+            task_select.prompt = "Group"
+            status_select.prompt = "N/A"
+            reviewer_select.prompt = "Teacher"
+        else:
+            task_select.prompt = "Task"
+            status_select.prompt = "Status"
+            reviewer_select.prompt = "Reviewer"
 
         try:
             files_radio = self.query_one("#files-radio", RadioButton)
@@ -1182,45 +1224,140 @@ class MainScreen(Screen[None]):
             pass
 
         if export_type == "tasks-export-radio":
+            titles = sorted({t.title for t in self.all_tasks if t.title})
             statuses = sorted({t.status for t in self.all_tasks if t.status})
-            status_select.set_options([(s, s) for s in statuses])
-            reviewer_select.disabled = True
-            task_select.disabled = True
-            status_select.disabled = False
+            sections = sorted({t.section for t in self.all_tasks if t.section})
+            self._set_export_filter_options(
+                task_select,
+                [(t, t) for t in titles],
+                prev_task,
+                enabled=bool(titles),
+            )
+            self._set_export_filter_options(
+                status_select,
+                [(s, s) for s in (sections if self.is_teacher_view else statuses)],
+                prev_status,
+                enabled=bool(sections if self.is_teacher_view else statuses),
+            )
+            self._set_export_filter_options(reviewer_select, [], Select.BLANK, enabled=False)
         elif export_type in ("queue-export-radio", "subs-export-radio"):
             tasks = sorted({e.task_title for e in self.all_queue_entries if e.task_title})
             statuses = sorted({e.status_name for e in self.all_queue_entries if e.status_name})
             reviewers = sorted(
                 {e.responsible_name for e in self.all_queue_entries if e.responsible_name}
             )
-            task_select.set_options([(t, t) for t in tasks])
-            status_select.set_options([(s, s) for s in statuses])
-            reviewer_select.set_options([(r, r) for r in reviewers])
-            task_select.disabled = False
-            status_select.disabled = False
-            reviewer_select.disabled = False
+            self._set_export_filter_options(
+                task_select,
+                [(t, t) for t in tasks],
+                prev_task,
+                enabled=bool(tasks),
+            )
+            self._set_export_filter_options(
+                status_select,
+                [(s, s) for s in statuses],
+                prev_status,
+                enabled=bool(statuses),
+            )
+            self._set_export_filter_options(
+                reviewer_select,
+                [(r, r) for r in reviewers],
+                prev_reviewer,
+                enabled=bool(reviewers),
+            )
         elif export_type == "gb-export-radio":
             groups = sorted({g.group_name for g in self.all_gradebook_groups if g.group_name})
             teachers = sorted({g.teacher_name for g in self.all_gradebook_groups if g.teacher_name})
-            task_select.set_options([(g, g) for g in groups])
-            reviewer_select.set_options([(t, t) for t in teachers])
-            task_select.disabled = False
-            status_select.disabled = True
-            reviewer_select.disabled = False
+            self._set_export_filter_options(
+                task_select,
+                [(g, g) for g in groups],
+                prev_task,
+                enabled=bool(groups),
+            )
+            self._set_export_filter_options(status_select, [], Select.BLANK, enabled=False)
+            self._set_export_filter_options(
+                reviewer_select,
+                [(t, t) for t in teachers],
+                prev_reviewer,
+                enabled=bool(teachers),
+            )
+        else:
+            self._set_export_filter_options(task_select, [], Select.BLANK, enabled=False)
+            self._set_export_filter_options(status_select, [], Select.BLANK, enabled=False)
+            self._set_export_filter_options(reviewer_select, [], Select.BLANK, enabled=False)
+
+    def _set_export_filter_options(
+        self,
+        select: Select[str],
+        options: list[tuple[str, str]],
+        previous_value: object,
+        *,
+        enabled: bool,
+    ) -> None:
+        """Set options and keep previous selection if still available."""
+        select.set_options(options)
+        if not enabled:
+            select.disabled = True
+            select.value = Select.BLANK
+            focused = self.focused
+            if focused is not None and (focused is select or focused in select.walk_children()):
+                with suppress(Exception):
+                    self.query_one("#export-type-set", RadioSet).focus()
+            return
+        select.disabled = False
+        values = {value for _, value in options}
+        if previous_value is not Select.BLANK and str(previous_value) in values:
+            select.value = str(previous_value)
+        else:
+            select.value = Select.BLANK
+
+    def _set_export_filters_loading_state(self) -> None:
+        """Disable row filters while related data is preloading."""
+        for wid in (
+            "#export-filter-task",
+            "#export-filter-status",
+            "#export-filter-reviewer",
+        ):
+            try:
+                sel = self.query_one(wid, Select)
+                sel.disabled = True
+            except Exception:
+                continue
+
+    def _has_loaded_export_data(self, export_type: str) -> bool:
+        """Return True if data for export filters/preview is already available."""
+        if export_type == "tasks-export-radio":
+            return True
+        if export_type in ("queue-export-radio", "subs-export-radio"):
+            return bool(self.all_queue_entries)
+        if export_type == "gb-export-radio":
+            return bool(self.all_gradebook_groups)
+        return True
 
     def _get_current_export_filters(self) -> dict[str, str]:
         """Get current row filter values."""
         filters: dict[str, str] = {}
         try:
+            export_type = self._get_current_export_type()
             task_val = self.query_one("#export-filter-task", Select).value
-            if task_val is not Select.BLANK:
-                filters["task"] = str(task_val)
             status_val = self.query_one("#export-filter-status", Select).value
-            if status_val is not Select.BLANK:
-                filters["status"] = str(status_val)
             reviewer_val = self.query_one("#export-filter-reviewer", Select).value
-            if reviewer_val is not Select.BLANK:
-                filters["reviewer"] = str(reviewer_val)
+            if export_type == "tasks-export-radio":
+                if task_val is not Select.BLANK:
+                    filters["task"] = str(task_val)
+                if status_val is not Select.BLANK:
+                    filters["section" if self.is_teacher_view else "status"] = str(status_val)
+            elif export_type in ("queue-export-radio", "subs-export-radio"):
+                if task_val is not Select.BLANK:
+                    filters["task"] = str(task_val)
+                if status_val is not Select.BLANK:
+                    filters["status"] = str(status_val)
+                if reviewer_val is not Select.BLANK:
+                    filters["reviewer"] = str(reviewer_val)
+            elif export_type == "gb-export-radio":
+                if task_val is not Select.BLANK:
+                    filters["group"] = str(task_val)
+                if reviewer_val is not Select.BLANK:
+                    filters["teacher"] = str(reviewer_val)
         except Exception:
             pass
         return filters
@@ -1284,56 +1421,75 @@ class MainScreen(Screen[None]):
             return
         if export_type == "subs-export-radio" and not self.is_teacher_view:
             return
+        self._export_preload_token += 1
+        token = self._export_preload_token
         if export_type == "queue-export-radio":
+            self._set_export_status("Loading queue data...", "info")
             self.query_one("#export-preview-content", Static).update(
                 "[dim]Loading queue data...[/dim]"
             )
-            self._preload_export_data(export_type, course_id)
+            self._preload_export_data(export_type, course_id, token)
         elif export_type == "subs-export-radio":
+            self._set_export_status("Loading submissions source data...", "info")
             self.query_one("#export-preview-content", Static).update(
                 "[dim]Loading submissions source data...[/dim]"
             )
-            self._preload_export_data(export_type, course_id)
+            self._preload_export_data(export_type, course_id, token)
         elif export_type == "gb-export-radio":
+            self._set_export_status("Loading gradebook data...", "info")
             self.query_one("#export-preview-content", Static).update(
                 "[dim]Loading gradebook data...[/dim]"
             )
-            self._preload_export_data(export_type, course_id)
+            self._preload_export_data(export_type, course_id, token)
 
     @work(thread=True)
-    def _preload_export_data(self, export_type: str, course_id: int) -> None:
+    def _preload_export_data(self, export_type: str, course_id: int, token: int) -> None:
         """Load required data for export type and refresh preview on completion."""
         try:
             loaded_message = "Preload complete"
             if export_type in ("queue-export-radio", "subs-export-radio"):
-                self.app.call_from_thread(
-                    self._set_export_status,
-                    "Loading queue data...",
-                    "info",
-                )
                 queue = self._load_queue_for_export(course_id)
                 loaded_message = f"Queue loaded: {len(queue.entries)} entries"
             elif export_type == "gb-export-radio":
-                self.app.call_from_thread(
-                    self._set_export_status,
-                    "Loading gradebook data...",
-                    "info",
-                )
                 gradebook = self._load_gradebook_for_export(course_id)
                 total = sum(len(g.entries) for g in gradebook.groups)
                 loaded_message = (
                     f"Gradebook loaded: {len(gradebook.groups)} group(s), {total} students"
                 )
-            self.app.call_from_thread(self._update_params)
-            self.app.call_from_thread(self._refresh_export_preview)
-            self.app.call_from_thread(self._set_export_status, loaded_message, "success")
+            self.app.call_from_thread(
+                self._finish_export_preload,
+                export_type,
+                token,
+                loaded_message,
+            )
         except Exception as e:
             self.app.call_from_thread(
-                self._set_export_status,
-                f"Failed to preload export data: {e}",
-                "error",
+                self._finish_export_preload,
+                export_type,
+                token,
+                "",
+                str(e),
             )
-            self.app.call_from_thread(self._refresh_export_preview)
+
+    def _finish_export_preload(
+        self,
+        export_type: str,
+        token: int,
+        loaded_message: str,
+        error: str | None = None,
+    ) -> None:
+        """Apply preload result only if still relevant for current export selection."""
+        if token != self._export_preload_token:
+            return
+        if export_type != self._get_current_export_type():
+            return
+        self._update_export_filters()
+        self._update_params()
+        self._refresh_export_preview()
+        if error is None:
+            self._set_export_status(loaded_message, "success")
+        else:
+            self._set_export_status(f"Failed to preload export data: {error}", "error")
 
     def _get_current_export_type(self) -> str:
         try:
@@ -1367,6 +1523,10 @@ class MainScreen(Screen[None]):
 
         if export_type == "tasks-export-radio":
             tasks = list(self.all_tasks)
+            if filters.get("task"):
+                tasks = [t for t in tasks if t.title == filters["task"]]
+            if filters.get("section"):
+                tasks = [t for t in tasks if t.section == filters["section"]]
             if filters.get("status"):
                 tasks = [t for t in tasks if t.status == filters["status"]]
             if not tasks:
@@ -1399,10 +1559,10 @@ class MainScreen(Screen[None]):
                 cached = cache.get(course_id)
                 if cached is not None:
                     groups = list(cached.groups)
-            if filters.get("task"):
-                groups = [g for g in groups if g.group_name == filters["task"]]
-            if filters.get("reviewer"):
-                groups = [g for g in groups if g.teacher_name == filters["reviewer"]]
+            if filters.get("group"):
+                groups = [g for g in groups if g.group_name == filters["group"]]
+            if filters.get("teacher"):
+                groups = [g for g in groups if g.teacher_name == filters["teacher"]]
             total = sum(len(g.entries) for g in groups)
             if not total:
                 return "[dim]Gradebook data will be loaded during export[/dim]"
@@ -1872,6 +2032,10 @@ class MainScreen(Screen[None]):
 
                 tasks = list(course.tasks)
 
+                if filters and filters.get("task"):
+                    tasks = [t for t in tasks if t.title == filters["task"]]
+                if filters and filters.get("section"):
+                    tasks = [t for t in tasks if t.section == filters["section"]]
                 if filters and filters.get("status"):
                     tasks = [t for t in tasks if t.status == filters["status"]]
 
@@ -2020,10 +2184,10 @@ class MainScreen(Screen[None]):
 
                 groups = list(gradebook.groups)
                 if filters:
-                    if filters.get("task"):
-                        groups = [g for g in groups if g.group_name == filters["task"]]
-                    if filters.get("reviewer"):
-                        groups = [g for g in groups if g.teacher_name == filters["reviewer"]]
+                    if filters.get("group"):
+                        groups = [g for g in groups if g.group_name == filters["group"]]
+                    if filters.get("teacher"):
+                        groups = [g for g in groups if g.teacher_name == filters["teacher"]]
 
                 filtered_gradebook = Gradebook(
                     course_id=gradebook.course_id,
