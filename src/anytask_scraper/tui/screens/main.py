@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from contextlib import suppress
@@ -75,6 +76,8 @@ from anytask_scraper.tui.widgets.filter_bar import (
     TaskFilterBar,
 )
 from anytask_scraper.tui.widgets.param_selector import ParameterSelector
+
+logger = logging.getLogger(__name__)
 
 _STATUS_STYLES: dict[str, str] = {
     "Зачтено": "bold green",
@@ -882,7 +885,7 @@ class MainScreen(Screen[None]):
             queue_export_radio.disabled = not self.is_teacher_view
             subs_export_radio.disabled = not self.is_teacher_view
         except Exception:
-            pass
+            logger.debug("Failed to update export radio buttons", exc_info=True)
 
         if self.is_teacher_view:
             self.query_one("#queue-info-label", Label).update("Queue loads on demand")
@@ -1056,6 +1059,7 @@ class MainScreen(Screen[None]):
 
             self.app.call_from_thread(self._render_queue_preview, sub)
         except Exception:
+            logger.debug("Failed to load queue preview", exc_info=True)
             self.app.call_from_thread(self._show_queue_preview_info, entry)
 
     def _show_queue_preview_loading(self, entry: QueueEntry) -> None:
@@ -1221,7 +1225,7 @@ class MainScreen(Screen[None]):
             files_radio = self.query_one("#files-radio", RadioButton)
             files_radio.disabled = export_type != "subs-export-radio"
         except Exception:
-            pass
+            logger.debug("Failed to update files radio", exc_info=True)
 
         if export_type == "tasks-export-radio":
             titles = sorted({t.title for t in self.all_tasks if t.title})
@@ -1359,7 +1363,7 @@ class MainScreen(Screen[None]):
                 if reviewer_val is not Select.BLANK:
                     filters["teacher"] = str(reviewer_val)
         except Exception:
-            pass
+            logger.debug("Failed to collect export filters", exc_info=True)
         return filters
 
     def _update_params(self) -> None:
@@ -1410,7 +1414,7 @@ class MainScreen(Screen[None]):
             preview_text = self._generate_preview(export_type, fmt)
             self.query_one("#export-preview-content", Static).update(preview_text)
         except Exception:
-            pass
+            logger.debug("Failed to update export preview", exc_info=True)
 
     def _start_export_preload(self, export_type: str) -> None:
         """Preload export data on type selection so preview/export are ready."""
@@ -1463,12 +1467,18 @@ class MainScreen(Screen[None]):
                 loaded_message,
             )
         except Exception as e:
+            logger.exception(
+                "Export preload failed for export_type=%s course_id=%s",
+                export_type,
+                course_id,
+            )
+            error_text = str(e).strip() or e.__class__.__name__
             self.app.call_from_thread(
                 self._finish_export_preload,
                 export_type,
                 token,
                 "",
-                str(e),
+                error_text,
             )
 
     def _finish_export_preload(
@@ -1489,7 +1499,8 @@ class MainScreen(Screen[None]):
         if error is None:
             self._set_export_status(loaded_message, "success")
         else:
-            self._set_export_status(f"Failed to preload export data: {error}", "error")
+            details = f": {error}" if error else ""
+            self._set_export_status(f"Failed to preload export data{details}", "error")
 
     def _get_current_export_type(self) -> str:
         try:
@@ -2123,6 +2134,7 @@ class MainScreen(Screen[None]):
                         sub = parse_submission_page(sub_html, issue_id)
                         subs.append(sub)
                     except Exception:
+                        logger.debug("Failed to fetch submission", exc_info=True)
                         continue  # Skip failed fetches
 
                 if not subs:

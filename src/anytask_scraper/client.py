@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://anytask.org"
 LOGIN_URL = f"{BASE_URL}/accounts/login/"
@@ -53,6 +56,7 @@ class AnytaskClient:
                 "No credentials available. Provide username/password or credentials file"
             )
 
+        logger.info("Logging in as %s", self.username)
         resp = self._client.get(LOGIN_URL)
         resp.raise_for_status()
 
@@ -78,14 +82,18 @@ class AnytaskClient:
             raise LoginError("Login failed: check username and password")
 
         self._authenticated = True
+        logger.info("Login successful")
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         if not self._authenticated and self._has_credentials():
             self.login()
 
+        logger.debug("%s %s", method, url)
         resp = self._client.request(method, url, **kwargs)
+        logger.debug("%s %s -> %d", method, url, resp.status_code)
 
         if self._is_login_response(resp):
+            logger.info("Session expired, re-authenticating")
             self._authenticated = False
             if not self._has_credentials():
                 raise LoginError("Saved session expired and no credentials were provided")
@@ -99,8 +107,10 @@ class AnytaskClient:
         """Load cookie session from file."""
         path = Path(session_path)
         if not path.exists():
+            logger.debug("Session file not found: %s", path)
             return False
 
+        logger.info("Loading session from %s", path)
         raw = json.loads(path.read_text(encoding="utf-8"))
         cookies = raw.get("cookies", [])
         if not isinstance(cookies, list):
@@ -126,10 +136,12 @@ class AnytaskClient:
             self.username = saved_username
 
         self._authenticated = True
+        logger.info("Session loaded with %d cookies", len(cookies))
         return True
 
     def save_session(self, session_path: Path | str) -> None:
         """Save cookie session to file."""
+        logger.info("Saving session to %s", session_path)
         path = Path(session_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -152,11 +164,13 @@ class AnytaskClient:
 
     def fetch_course_page(self, course_id: int) -> str:
         """Return course page HTML."""
+        logger.debug("Fetching course page for course %d", course_id)
         resp = self._request("GET", f"{BASE_URL}/course/{course_id}")
         return resp.text
 
     def fetch_task_description(self, task_id: int) -> str:
         """Return task description from /task/edit/{id}."""
+        logger.debug("Fetching task description for task %d", task_id)
         from anytask_scraper.parser import parse_task_edit_page
 
         resp = self._request("GET", f"{BASE_URL}/task/edit/{task_id}")
@@ -164,11 +178,13 @@ class AnytaskClient:
 
     def fetch_queue_page(self, course_id: int) -> str:
         """Return queue page HTML."""
+        logger.debug("Fetching queue page for course %d", course_id)
         resp = self._request("GET", f"{BASE_URL}/course/{course_id}/queue?update_time=")
         return resp.text
 
     def fetch_gradebook_page(self, course_id: int) -> str:
         """Return gradebook page HTML."""
+        logger.debug("Fetching gradebook page for course %d", course_id)
         resp = self._request("GET", f"{BASE_URL}/course/{course_id}/gradebook/")
         return resp.text
 
@@ -207,6 +223,7 @@ class AnytaskClient:
         filter_query: str = "",
     ) -> list[dict[str, object]]:
         """Return all queue rows via pagination."""
+        logger.debug("Fetching all queue entries for course %d", course_id)
         all_entries: list[dict[str, object]] = []
         start = 0
         page_size = 100
@@ -223,6 +240,7 @@ class AnytaskClient:
                 break
             all_entries.extend(data)
             total = int(str(result.get("recordsTotal", 0)))
+            logger.debug("Queue pagination: fetched %d/%d entries", len(all_entries), total)
             start += page_size
             if start >= total or len(data) < page_size:
                 break
@@ -291,6 +309,7 @@ class AnytaskClient:
 
     def download_file(self, url: str, output_path: str) -> DownloadResult:
         """Download file to local path with content validation."""
+        logger.debug("Downloading %s -> %s", url, output_path)
         if not self._authenticated and self._has_credentials():
             self.login()
 
@@ -304,17 +323,20 @@ class AnytaskClient:
         except LoginError:
             tmp_path.unlink(missing_ok=True)
             raise
-        except Exception as e:
+        except Exception:
             tmp_path.unlink(missing_ok=True)
-            return DownloadResult(success=False, path=output_path, reason=f"download_error: {e}")
+            logger.exception("Download failed: %s", url)
+            return DownloadResult(success=False, path=output_path, reason="download_error")
 
         content_type = resp.headers.get("content-type", "")
         problem = self._validate_downloaded_file(tmp_path, content_type, output.suffix)
         if problem:
+            logger.debug("Validation failed for %s: %s", output_path, problem)
             tmp_path.unlink(missing_ok=True)
             return DownloadResult(success=False, path=output_path, reason=problem)
 
         tmp_path.rename(output)
+        logger.debug("Download complete: %s", output_path)
         return DownloadResult(success=True, path=output_path, reason="ok")
 
     def download_colab_notebook(self, colab_url: str, output_path: str) -> DownloadResult:

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 
 from anytask_scraper.models import Course, Gradebook, ReviewQueue, Submission, Task
 from anytask_scraper.parser import format_student_folder, strip_html
+
+logger = logging.getLogger(__name__)
 
 
 def save_course_json(course: Course, output_dir: Path | str = ".") -> Path:
@@ -17,6 +20,7 @@ def save_course_json(course: Course, output_dir: Path | str = ".") -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"course_{course.course_id}.json"
     path.write_text(json.dumps(asdict(course), indent=2, default=str, ensure_ascii=False))
+    logger.info("Saved course JSON -> %s", path)
     return path
 
 
@@ -41,6 +45,7 @@ def save_course_markdown(course: Course, output_dir: Path | str = ".") -> Path:
         _md_student_tasks(course.tasks, lines)
 
     path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Saved course Markdown -> %s", path)
     return path
 
 
@@ -88,6 +93,7 @@ def save_queue_json(queue: ReviewQueue, output_dir: Path | str = ".") -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"queue_{queue.course_id}.json"
     path.write_text(json.dumps(asdict(queue), indent=2, default=str, ensure_ascii=False))
+    logger.info("Saved queue JSON -> %s", path)
     return path
 
 
@@ -137,6 +143,7 @@ def save_queue_markdown(queue: ReviewQueue, output_dir: Path | str = ".") -> Pat
                 lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Saved queue Markdown -> %s", path)
     return path
 
 
@@ -186,6 +193,7 @@ def save_course_csv(
                     "Deadline": task.deadline.strftime("%Y-%m-%d %H:%M") if task.deadline else "",
                 }
                 writer.writerow([row_data[c] for c in filtered_columns])
+    logger.info("Saved course CSV -> %s", path)
     return path
 
 
@@ -217,6 +225,7 @@ def save_queue_csv(
                 "Grade": e.mark,
             }
             writer.writerow([row_data[c] for c in filtered_columns])
+    logger.info("Saved queue CSV -> %s", path)
     return path
 
 
@@ -266,6 +275,7 @@ def save_submissions_csv(
                 "Comments": len(sub.comments),
             }
             writer.writerow([row_data[c] for c in filtered_columns])
+    logger.info("Saved submissions CSV -> %s", path)
     return path
 
 
@@ -288,6 +298,7 @@ def download_submission_files(
     student_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded: dict[str, Path] = {}
+    logger.debug("Downloading files for submission %d to %s", submission.issue_id, student_dir)
 
     for comment in submission.comments:
         for file_att in comment.files:
@@ -295,6 +306,8 @@ def download_submission_files(
             result = client.download_file(file_att.download_url, str(dest))
             if result.success:
                 downloaded[file_att.filename] = dest
+            else:
+                logger.debug("Download failed: %s (%s)", file_att.filename, result.reason)
 
         for link in comment.links:
             if "colab.research.google.com" not in link:
@@ -318,6 +331,7 @@ def save_gradebook_json(gradebook: Gradebook, output_dir: Path | str = ".") -> P
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"gradebook_{gradebook.course_id}.json"
     path.write_text(json.dumps(asdict(gradebook), indent=2, default=str, ensure_ascii=False))
+    logger.info("Saved gradebook JSON -> %s", path)
     return path
 
 
@@ -347,6 +361,7 @@ def save_gradebook_markdown(gradebook: Gradebook, output_dir: Path | str = ".") 
         lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Saved gradebook Markdown -> %s", path)
     return path
 
 
@@ -385,4 +400,5 @@ def save_gradebook_csv(
                     row_data[t] = str(entry.scores.get(t, ""))
 
                 writer.writerow([row_data[c] for c in filtered_columns])
+    logger.info("Saved gradebook CSV -> %s", path)
     return path

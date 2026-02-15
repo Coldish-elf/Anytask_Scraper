@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console
 
+from anytask_scraper._logging import setup_logging
 from anytask_scraper.client import AnytaskClient, LoginError
 from anytask_scraper.display import (
     display_course,
@@ -60,7 +62,10 @@ SETTINGS_KEYS = (
     "save_session",
     "refresh_session",
     "auto_login_session",
+    "debug",
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -101,6 +106,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--settings-file",
         default=DEFAULT_SETTINGS_FILE,
         help=f"Path to settings file (default: {DEFAULT_SETTINGS_FILE})",
+    )
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        default=None,
+        help="Enable debug logging output",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Write log output to file",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -268,6 +285,12 @@ def _build_parser() -> argparse.ArgumentParser:
     set_p.add_argument(
         "--auto-login-session",
         dest="set_auto_login_session",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    set_p.add_argument(
+        "--debug",
+        dest="set_debug",
         action=argparse.BooleanOptionalAction,
         default=None,
     )
@@ -455,6 +478,7 @@ def _run_settings(args: argparse.Namespace) -> None:
             "save_session": args.set_save_session,
             "refresh_session": args.set_refresh_session,
             "auto_login_session": args.set_auto_login_session,
+            "debug": args.set_debug,
         }
         changed = False
         for key, value in updates.items():
@@ -713,14 +737,23 @@ def main(argv: list[str] | None = None) -> None:
         _run_settings(args)
         return
 
+    try:
+        settings = _load_settings(args.settings_file)
+    except Exception as e:
+        err_console.print(f"[bold red]Settings error:[/bold red] {e}")
+        sys.exit(1)
+
+    debug = args.debug if args.debug is not None else settings.get("debug", False)
+    log_level = logging.DEBUG if debug else logging.WARNING
+    setup_logging(level=log_level, log_file=args.log_file)
+
     if args.command == "tui":
         from anytask_scraper.tui import run
 
-        run()
+        run(debug=debug)
         return
 
     try:
-        settings = _load_settings(args.settings_file)
         _merge_runtime_settings(args, settings)
     except Exception as e:
         err_console.print(f"[bold red]Settings error:[/bold red] {e}")

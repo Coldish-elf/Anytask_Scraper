@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -13,6 +13,8 @@ from textual.binding import Binding
 
 from anytask_scraper.client import AnytaskClient
 from anytask_scraper.models import Course, Gradebook, ReviewQueue
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path.home() / ".config" / "anytask-scraper"
 COURSES_FILE = CONFIG_DIR / "courses.json"
@@ -59,8 +61,10 @@ class AnytaskApp(App[None]):
     def on_unmount(self) -> None:
         if self.client is not None:
             if self.session_path:
-                with contextlib.suppress(Exception):
+                try:
                     self.client.save_session(self.session_path)
+                except Exception:
+                    logger.debug("Failed to save session on unmount", exc_info=True)
             self.client.close()
 
     def action_ctrl_c(self) -> None:
@@ -80,7 +84,7 @@ class AnytaskApp(App[None]):
             ids = list(self.courses.keys())
             COURSES_FILE.write_text(json.dumps(ids, indent=2), encoding="utf-8")
         except Exception:
-            pass
+            logger.debug("Failed to save course IDs", exc_info=True)
 
     def load_course_ids(self) -> list[int]:
         """Load saved course IDs from config file."""
@@ -91,7 +95,7 @@ class AnytaskApp(App[None]):
             if isinstance(raw, list):
                 return [int(x) for x in raw if isinstance(x, int)]
         except Exception:
-            pass
+            logger.debug("Failed to load course IDs", exc_info=True)
         return []
 
     def remove_course_id(self, course_id: int) -> None:
@@ -110,12 +114,13 @@ class AnytaskApp(App[None]):
                 if isinstance(data, dict):
                     return data
         except Exception:
-            pass
+            logger.debug("Failed to load settings", exc_info=True)
         return {}
 
     @work(thread=True)
     def _auto_login(self, session_path: str) -> None:
         """Auto-login using saved session file."""
+        logger.info("Attempting auto-login from %s", session_path)
         try:
             from anytask_scraper.client import AnytaskClient
 
@@ -124,6 +129,7 @@ class AnytaskApp(App[None]):
             if success:
                 self.client = client
                 self.session_path = session_path
+                logger.info("Auto-login successful")
 
                 def _push_main() -> None:
                     from anytask_scraper.tui.screens.main import MainScreen
@@ -133,7 +139,7 @@ class AnytaskApp(App[None]):
                 self.call_from_thread(_push_main)
                 return
         except Exception:
-            pass
+            logger.debug("Auto-login failed", exc_info=True)
 
         def _push_login() -> None:
             from anytask_scraper.tui.screens.login import LoginScreen

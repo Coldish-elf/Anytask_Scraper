@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from textual import on, work
@@ -13,6 +14,8 @@ from textual.widgets import Button, Input, Label
 
 from anytask_scraper.client import AnytaskClient, LoginError
 from anytask_scraper.tui.app import SESSION_FILE
+
+logger = logging.getLogger(__name__)
 
 
 class LoginScreen(Screen[None]):
@@ -95,32 +98,40 @@ class LoginScreen(Screen[None]):
 
     @work(thread=True)
     def _do_login(self, username: str, password: str) -> None:
+        logger.info("TUI login attempt for user %s", username)
         try:
             client = AnytaskClient(username=username, password=password)
             client.login()
             self.app.client = client  # type: ignore[attr-defined]
             self.app.session_path = ""  # type: ignore[attr-defined]
+            logger.info("TUI login successful for user %s", username)
             self.app.call_from_thread(self._set_status, f"Logged in as {username}", "success")
             self.app.call_from_thread(self._go_main)
         except LoginError as e:
+            logger.warning("TUI login failed: %s", e)
             self.app.call_from_thread(self._set_status, f"Login failed: {e}", "error")
         except Exception as e:
+            logger.exception("TUI login error")
             self.app.call_from_thread(self._set_status, f"Error: {e}", "error")
 
     @work(thread=True)
     def _do_load_session(self, session_path: str) -> None:
+        logger.info("Loading session from %s", session_path)
         try:
             client = AnytaskClient()
             success = client.load_session(session_path)
             if not success:
+                logger.warning("Failed to load session from %s", session_path)
                 self.app.call_from_thread(self._set_status, "Failed to load session", "error")
                 return
             self.app.client = client  # type: ignore[attr-defined]
             self.app.session_path = session_path  # type: ignore[attr-defined]
             name = client.username or "saved session"
+            logger.info("Session loaded for %s", name)
             self.app.call_from_thread(self._set_status, f"Loaded ({name})", "success")
             self.app.call_from_thread(self._go_main)
         except Exception as e:
+            logger.exception("Error loading session")
             self.app.call_from_thread(self._set_status, f"Error: {e}", "error")
 
     def _set_status(self, message: str, kind: str = "info") -> None:

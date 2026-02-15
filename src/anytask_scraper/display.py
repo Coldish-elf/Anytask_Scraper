@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from rich.console import Console
@@ -11,6 +12,8 @@ from rich.text import Text
 
 from anytask_scraper.models import Course, Gradebook, ReviewQueue, Submission, Task
 from anytask_scraper.parser import strip_html
+
+logger = logging.getLogger(__name__)
 
 _STATUS_STYLES: dict[str, str] = {
     "Зачтено": "bold green",
@@ -48,6 +51,7 @@ def _score_text(task: Task) -> str:
 
 def display_course(course: Course, console: Console | None = None) -> None:
     """Render course view."""
+    logger.debug("Rendering course %d (%d tasks)", course.course_id, len(course.tasks))
     if console is None:
         console = Console()
 
@@ -134,6 +138,7 @@ _QUEUE_STATUS_COLORS: dict[str, str] = {
 
 def display_queue(queue: ReviewQueue, console: Console | None = None) -> None:
     """Render review queue."""
+    logger.debug("Rendering queue (%d entries)", len(queue.entries))
     if console is None:
         console = Console()
 
@@ -216,6 +221,7 @@ _GRADEBOOK_COLOR_MAP: dict[str, str] = {
 
 def display_gradebook(gradebook: Gradebook, console: Console | None = None) -> None:
     """Render gradebook tables."""
+    logger.debug("Rendering gradebook (%d groups)", len(gradebook.groups))
     if console is None:
         console = Console()
 

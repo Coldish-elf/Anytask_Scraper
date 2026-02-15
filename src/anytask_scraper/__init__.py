@@ -1,11 +1,13 @@
 """anytask_scraper: Scrape course data from anytask.org."""
 
-from anytask_scraper.client import AnytaskClient, LoginError
+from anytask_scraper._logging import setup_logging
+from anytask_scraper.client import AnytaskClient, DownloadResult, LoginError
 from anytask_scraper.display import (
     display_course,
     display_gradebook,
     display_queue,
     display_submission,
+    display_task_detail,
 )
 from anytask_scraper.models import (
     Comment,
@@ -34,19 +36,23 @@ from anytask_scraper.parser import (
 )
 from anytask_scraper.storage import (
     download_submission_files,
+    save_course_csv,
     save_course_json,
     save_course_markdown,
     save_gradebook_csv,
     save_gradebook_json,
     save_gradebook_markdown,
+    save_queue_csv,
     save_queue_json,
     save_queue_markdown,
+    save_submissions_csv,
 )
 
 __all__ = [
     "AnytaskClient",
     "Comment",
     "Course",
+    "DownloadResult",
     "FileAttachment",
     "Gradebook",
     "GradebookEntry",
@@ -61,6 +67,7 @@ __all__ = [
     "display_gradebook",
     "display_queue",
     "display_submission",
+    "display_task_detail",
     "download_submission_files",
     "extract_csrf_from_queue_page",
     "extract_issue_id_from_breadcrumb",
@@ -71,12 +78,16 @@ __all__ = [
     "parse_queue_filters",
     "parse_submission_page",
     "parse_task_edit_page",
+    "save_course_csv",
     "save_course_json",
     "save_course_markdown",
     "save_gradebook_csv",
     "save_gradebook_json",
     "save_gradebook_markdown",
+    "save_queue_csv",
     "save_queue_json",
     "save_queue_markdown",
+    "save_submissions_csv",
+    "setup_logging",
     "strip_html",
 ]

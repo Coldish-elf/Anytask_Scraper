@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from html import unescape
@@ -20,6 +21,8 @@ from anytask_scraper.models import (
     Task,
 )
 
+logger = logging.getLogger(__name__)
+
 _DEADLINE_RE = re.compile(r"(\d{2}):(\d{2})\s+(\d{2})-(\d{2})-(\d{4})")
 _TASK_ID_RE = re.compile(r"collapse_(\d+)")
 _TASK_EDIT_RE = re.compile(r"/task/edit/(\d+)")
@@ -27,6 +30,7 @@ _TASK_EDIT_RE = re.compile(r"/task/edit/(\d+)")
 
 def parse_course_page(html: str, course_id: int) -> Course:
     """Parse course page into ``Course``."""
+    logger.debug("Parsing course page for course %d", course_id)
     soup = BeautifulSoup(html, "lxml")
 
     title = _extract_course_title(soup)
@@ -34,11 +38,13 @@ def parse_course_page(html: str, course_id: int) -> Course:
 
     tasks_tab = soup.find("div", id="tasks-tab")
     if tasks_tab is None:
+        logger.warning("No tasks-tab found for course %d", course_id)
         return Course(course_id=course_id, title=title, teachers=teachers)
 
     has_groups = tasks_tab.find("div", id=re.compile(r"^collapse_group_\d+$")) is not None
 
     tasks = _parse_teacher_tasks(tasks_tab) if has_groups else _parse_student_tasks(tasks_tab)
+    logger.debug("Parsed %d tasks for course %d", len(tasks), course_id)
 
     return Course(course_id=course_id, title=title, teachers=teachers, tasks=tasks)
 
@@ -257,6 +263,7 @@ def extract_csrf_from_queue_page(html: str) -> str:
 
 def parse_submission_page(html: str, issue_id: int) -> Submission:
     """Parse full submission page."""
+    logger.debug("Parsing submission page for issue %d", issue_id)
     soup = BeautifulSoup(html, "lxml")
     meta = _parse_submission_metadata(soup)
     comments = _parse_comment_thread(soup)
@@ -441,13 +448,26 @@ def _parse_comment_files(container: Tag) -> list[FileAttachment]:
         download_url = ""
         if dropdown:
             items = dropdown.find_all("a", class_="dropdown-item")
+            preferred_url = ""
+            media_url = ""
+            fallback_url = ""
             for item in items:
                 href = str(item.get("href", ""))
-                if href.startswith("/media/"):
-                    download_url = href
-                    break
-            if not download_url and items:
-                download_url = str(items[0].get("href", ""))
+                if not href:
+                    continue
+                text = item.get_text(strip=True).lower()
+                if not fallback_url:
+                    fallback_url = href
+                if "скач" in text or "download" in text:
+                    preferred_url = href
+                if "/media/files/" in href or href.startswith("/media/"):
+                    media_url = href
+            if preferred_url:
+                download_url = preferred_url
+            elif media_url:
+                download_url = media_url
+            else:
+                download_url = fallback_url
         files.append(FileAttachment(filename=filename, download_url=download_url, is_notebook=True))
 
     for a_tag in files_div.find_all("a", recursive=True):
@@ -496,6 +516,7 @@ _TABLE_ID_RE = re.compile(r"table_results_(\d+)")
 
 def parse_gradebook_page(html: str, course_id: int) -> Gradebook:
     """Parse gradebook page into ``Gradebook``."""
+    logger.debug("Parsing gradebook page for course %d", course_id)
     soup = BeautifulSoup(html, "lxml")
     gradebook = Gradebook(course_id=course_id)
 
@@ -504,6 +525,7 @@ def parse_gradebook_page(html: str, course_id: int) -> Gradebook:
         if group is not None:
             gradebook.groups.append(group)
 
+    logger.debug("Parsed %d gradebook groups for course %d", len(gradebook.groups), course_id)
     return gradebook
 
 
